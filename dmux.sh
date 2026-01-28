@@ -7,7 +7,7 @@
 # A CLI tool to quickly spin up development environments with multiple
 # terminal panes, optionally pre-launching Claude Code in each.
 #
-# https://github.com/anthropics/dmux
+# https://github.com/dharnnie/dmux
 #
 # ==============================================================================
 

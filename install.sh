@@ -5,17 +5,17 @@
 # ==============================================================================
 #
 # Install:
-#   curl -fsSL https://raw.githubusercontent.com/anthropics/dmux/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/install.sh | bash
 #
 # Or clone and run:
-#   git clone https://github.com/anthropics/dmux.git
+#   git clone https://github.com/dharnnie/dmux.git
 #   cd dmux && ./install.sh
 #
 # ==============================================================================
 
 set -euo pipefail
 
-REPO_URL="https://github.com/anthropics/dmux"
+REPO_URL="https://github.com/dharnnie/dmux"
 INSTALL_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dmux"
 

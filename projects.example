@@ -1,0 +1,26 @@
+# dmux project configuration
+# ==========================
+#
+# Add your projects here, one per line.
+# Format: name=$HOME/path/to/project
+#
+# The name is what you use with -p flag:
+#   dmux -p myapp
+#
+# Use $HOME instead of ~ for portability.
+#
+# Examples:
+# ---------
+
+# Web projects
+# frontend=$HOME/code/my-frontend
+# backend=$HOME/code/my-backend
+# api=$HOME/work/api-service
+
+# Personal
+# dotfiles=$HOME/.dotfiles
+# notes=$HOME/Documents/notes
+
+# Work
+# main-app=$HOME/work/main-application
+# microservice=$HOME/work/payment-service

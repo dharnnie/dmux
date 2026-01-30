@@ -159,7 +159,7 @@ This will:
 - Create a git worktree per agent (e.g. `../my-api-agents-auth`)
 - Launch a tmux session with one pane per agent + a main integration pane
 - Run `claude "task..."` in each agent pane automatically
-- Initialize git submodules in each worktree (so [claude-cortex](https://github.com/anthropics/claude-cortex) rules apply)
+- Initialize git submodules in each worktree (so [claude-cortex](https://github.com/dharnnie/claude-cortex) rules apply)
 
 ### Session Layout
 
@@ -179,8 +179,10 @@ This will:
 | `dmux agents start` | Read `.dmux-agents.yml`, create worktrees, launch session |
 | `dmux agents start myapp` | Start agents for a registered project |
 | `dmux agents start --config path.yml` | Use a custom config file |
-| `dmux agents status` | Show agent pane statuses (running/idle) |
-| `dmux agents cleanup` | Remove worktrees and kill the session |
+| `dmux agents start -y` | Skip the pre-launch confirmation prompt |
+| `dmux agents status` | Show agent pane statuses (running/idle/waiting/done) |
+| `dmux agents cleanup` | Remove worktrees, signal dir, and kill the session |
+| `dmux agents init` | Interactively generate a `.dmux-agents.yml` |
 | `dmux agents help` | Show agents help |
 
 ### Config Reference
@@ -191,10 +193,97 @@ This will:
 | `worktree_base` | no | `..` | Directory for worktrees (relative to project root) |
 | `main_pane` | no | `true` | Add a bottom pane at the project root |
 | `agents[].name` | yes | — | Agent identifier (used in worktree path) |
-| `agents[].branch` | yes | — | Git branch for the worktree |
+| `agents[].branch` | yes* | — | Git branch for the worktree (*not required for review agents) |
 | `agents[].task` | no | — | Task string passed to `claude` |
+| `agents[].scope` | no | — | List of writable file paths (appended to prompt) |
+| `agents[].context` | no | — | List of read-only file paths (appended to prompt) |
+| `agents[].role` | no | `build` | Agent role: `build` (default) or `review` |
+| `agents[].depends_on` | no | — | List of agent names this agent waits for before launching |
 
 Worktree paths follow the pattern: `{worktree_base}/{session}-{agent_name}`
+
+### Review Agent
+
+A `review` agent runs at the project root (no worktree or branch) and is designed to review the work of other agents. Use `depends_on` to make it wait until build agents finish:
+
+```yaml
+agents:
+  - name: auth
+    branch: feature/auth
+    task: "implement JWT authentication"
+    scope:
+      - src/auth/
+      - src/middleware/auth.ts
+    context:
+      - src/types/
+
+  - name: catalog
+    branch: feature/catalog
+    task: "build product listing API"
+
+  - name: reviewer
+    role: review
+    task: "review changes on feature/auth and feature/catalog for bugs and security issues"
+    depends_on:
+      - auth
+      - catalog
+```
+
+- **scope** restricts the agent to only modify the listed paths (added to the prompt).
+- **context** tells the agent it may read but not modify the listed paths.
+- **role: review** skips worktree creation; the pane opens at the project root. If no `task` is provided, a default review prompt referencing all build agent branches is generated.
+- **depends_on** lists agent names that must finish before this agent launches. The dependent agent's pane will show "Waiting for agents: ..." until all dependencies complete. Dependency completion is tracked via marker files in `.dmux/signals/`.
+
+### Scaffolding with `agents init`
+
+Generate a `.dmux-agents.yml` interactively:
+
+```bash
+dmux agents init
+```
+
+This walks you through session name, worktree base, main pane, and each agent's name, branch, task, role, and dependencies. It writes the result to `.dmux-agents.yml` in the current directory.
+
+### Pre-Launch Summary
+
+When you run `agents start`, a summary table is printed before any worktrees are created:
+
+```
+Config: .dmux-agents.yml
+
+  SESSION          my-api-agents
+  WORKTREE BASE    ..
+  MAIN PANE        true
+
+  AGENT            BRANCH                   ROLE     DEPENDS ON
+  -----            ------                   ----     ----------
+  auth             feature/auth             build    —
+  catalog          feature/catalog          build    —
+  reviewer         —                        review   auth, catalog
+
+  Worktrees to create: 2
+  Review agents: 1 (will wait for dependencies)
+
+Proceed? [Y/n]:
+```
+
+Use `--yes` / `-y` to skip the confirmation prompt.
+
+### Signal Directory
+
+`agents start` creates `.dmux/signals/` in the project root to track agent completion via marker files. Each agent writes its exit code to `.dmux/signals/<name>.done` when it finishes.
+
+You can manually unblock a waiting agent:
+```bash
+touch .dmux/signals/auth.done
+```
+
+Add `.dmux/` to your `.gitignore`:
+```
+.dmux/
+```
+
+`agents cleanup` removes the `.dmux/` directory automatically.
 
 ### Example: Building an API with 3 Agents
 
@@ -217,6 +306,11 @@ agents:
   - name: auth
     branch: feature/auth
     task: "implement JWT authentication with refresh tokens"
+    scope:
+      - src/auth/
+      - src/middleware/auth.ts
+    context:
+      - src/types/
   - name: catalog
     branch: feature/catalog
     task: "build product listing API with search and filters"
@@ -225,7 +319,7 @@ agents:
     task: "create admin dashboard CRUD endpoints"
 ```
 
-Each agent gets its own git branch and worktree directory. The `task` field is passed directly to `claude` as an inline prompt.
+Each agent gets its own git branch and worktree directory. The `task` field is passed directly to `claude` as an inline prompt. Optional `scope` and `context` fields add file-path restrictions to the prompt.
 
 **Step 3 — Start the agents:**
 
@@ -311,7 +405,7 @@ This kills the tmux session and removes all worktree directories. The branches r
 
 ### How claude-cortex Fits In
 
-Each worktree is a full copy of your repo, so `CLAUDE.md` and any [claude-cortex](https://github.com/anthropics/claude-cortex) submodule rules are automatically available to every agent. Submodules are initialized in each worktree during setup.
+Each worktree is a full copy of your repo, so `CLAUDE.md` and any [claude-cortex](https://github.com/dharnnie/claude-cortex) submodule rules are automatically available to every agent. Submodules are initialized in each worktree during setup.
 
 ## How it works
 

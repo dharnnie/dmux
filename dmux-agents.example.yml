@@ -9,9 +9,25 @@ agents:
   - name: auth
     branch: feature/auth
     task: "implement JWT authentication with refresh tokens"
+    # scope: restrict which files this agent may modify
+    # scope:
+    #   - src/auth/
+    #   - src/middleware/auth.ts
+    #   - tests/auth/
+    # context: files the agent may read but not modify
+    # context:
+    #   - src/types/
+    #   - src/config/
   - name: catalog
     branch: feature/catalog
     task: "build product listing API with search and filters"
   - name: admin
     branch: feature/admin
     task: "create admin dashboard CRUD endpoints"
+  - name: reviewer
+    role: review
+    task: "review changes on feature/auth, feature/catalog, and feature/admin for bugs, security issues, and style"
+    depends_on:
+      - auth
+      - catalog
+      - admin

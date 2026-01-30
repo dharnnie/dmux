@@ -92,6 +92,9 @@ install_script() {
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+  local is_update=false
+  [[ -f "$INSTALL_DIR/dmux" ]] && is_update=true
+
   if [[ -f "$script_dir/dmux.sh" ]]; then
     # Local install from cloned repo
     cp "$script_dir/dmux.sh" "$INSTALL_DIR/dmux"
@@ -102,7 +105,11 @@ install_script() {
   fi
 
   chmod +x "$INSTALL_DIR/dmux"
-  success "Installed: $INSTALL_DIR/dmux"
+  if $is_update; then
+    success "Updated: $INSTALL_DIR/dmux"
+  else
+    success "Installed: $INSTALL_DIR/dmux"
+  fi
 }
 
 setup_config() {
@@ -169,9 +176,11 @@ main() {
   echo "    dmux -a myproject ~/code/myproject   # Add a project"
   echo "    dmux -p myproject                    # Launch it"
   echo "    dmux -p myproject -n 2 -c 1          # 2 panes, claude in 1"
+  echo "    dmux agents start                    # Multi-agent orchestration"
   echo ""
   echo "  Config: $CONFIG_DIR/projects"
   echo "  Help:   dmux -h"
+  echo "  Agents: dmux agents help"
   echo ""
 }
 

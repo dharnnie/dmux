@@ -719,17 +719,17 @@ agents_start() {
   create_worktrees "$project_root" || exit 1
   echo ""
 
-  # Set up signal directory for marker files
+  local abs_root
+  abs_root=$(cd "$project_root" && pwd)
+
+  # Set up signal directory for marker files (use absolute path so all agents resolve it correctly)
   local signal_dir
-  signal_dir=$(setup_signal_dir "$project_root")
+  signal_dir=$(setup_signal_dir "$abs_root")
   echo "Signal directory: $signal_dir"
   echo ""
 
   # Kill existing session
   tmux kill-session -t "$AGENTS_SESSION" 2>/dev/null || true
-
-  local abs_root
-  abs_root=$(cd "$project_root" && pwd)
 
   # Collect all non-review branch names for review agent prompts
   local all_branches=""

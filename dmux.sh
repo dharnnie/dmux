@@ -85,6 +85,10 @@ AGENTS_MAIN_PANE="true"
 AGENTS_NAMES=()
 AGENTS_BRANCHES=()
 AGENTS_TASKS=()
+AGENTS_SCOPES=()     # comma-separated writable paths, or empty
+AGENTS_CONTEXTS=()   # comma-separated read-only paths, or empty
+AGENTS_ROLES=()      # "build" (default) or "review"
+AGENTS_DEPENDS_ON=() # comma-separated agent names, or empty
 
 # Strip inline YAML comments (# ...) from a value, preserving # inside quotes
 strip_yaml_comment() {
@@ -120,11 +124,22 @@ parse_agents_config() {
   AGENTS_NAMES=()
   AGENTS_BRANCHES=()
   AGENTS_TASKS=()
+  AGENTS_SCOPES=()
+  AGENTS_CONTEXTS=()
+  AGENTS_ROLES=()
+  AGENTS_DEPENDS_ON=()
 
   local in_agents_list=false
   local current_name=""
   local current_branch=""
   local current_task=""
+  local current_role=""
+  local current_scope=""
+  local current_context=""
+  local in_scope_list=false
+  local in_context_list=false
+  local current_depends_on=""
+  local in_depends_on_list=false
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Skip comments and empty lines
@@ -138,18 +153,66 @@ parse_agents_config() {
         AGENTS_NAMES+=("$current_name")
         AGENTS_BRANCHES+=("$current_branch")
         AGENTS_TASKS+=("$current_task")
+        AGENTS_ROLES+=("${current_role:-build}")
+        AGENTS_SCOPES+=("$current_scope")
+        AGENTS_CONTEXTS+=("$current_context")
+        AGENTS_DEPENDS_ON+=("$current_depends_on")
       fi
       current_name=$(strip_yaml_comment "${BASH_REMATCH[1]}")
       current_name="${current_name#"${current_name%%[![:space:]]*}"}"
       current_name="${current_name%"${current_name##*[![:space:]]}"}"
       current_branch=""
       current_task=""
+      current_role=""
+      current_scope=""
+      current_context=""
+      current_depends_on=""
+      in_scope_list=false
+      in_context_list=false
+      in_depends_on_list=false
       in_agents_list=true
       continue
     fi
 
-    # Inside an agent entry — parse branch and task
+    # Inside an agent entry — parse branch, task, role, scope, context
     if $in_agents_list; then
+      # List items under scope: or context:
+      if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+(.*) ]]; then
+        local item
+        item=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        if $in_scope_list; then
+          if [[ -n "$current_scope" ]]; then
+            current_scope+=",${item}"
+          else
+            current_scope="$item"
+          fi
+          continue
+        fi
+        if $in_context_list; then
+          if [[ -n "$current_context" ]]; then
+            current_context+=",${item}"
+          else
+            current_context="$item"
+          fi
+          continue
+        fi
+        if $in_depends_on_list; then
+          if [[ -n "$current_depends_on" ]]; then
+            current_depends_on+=",${item}"
+          else
+            current_depends_on="$item"
+          fi
+          continue
+        fi
+      fi
+
+      # Any non-list-item line resets sub-list flags
+      in_scope_list=false
+      in_context_list=false
+      in_depends_on_list=false
+
       if [[ "$line" =~ ^[[:space:]]+branch:[[:space:]]*(.*) ]]; then
         current_branch=$(strip_yaml_comment "${BASH_REMATCH[1]}")
         current_branch="${current_branch#"${current_branch%%[![:space:]]*}"}"
@@ -160,6 +223,24 @@ parse_agents_config() {
         current_task=$(strip_yaml_comment "${BASH_REMATCH[1]}")
         current_task="${current_task#"${current_task%%[![:space:]]*}"}"
         current_task="${current_task%"${current_task##*[![:space:]]}"}"
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]+role:[[:space:]]*(.*) ]]; then
+        current_role=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        current_role="${current_role#"${current_role%%[![:space:]]*}"}"
+        current_role="${current_role%"${current_role##*[![:space:]]}"}"
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]+scope:[[:space:]]*$ ]]; then
+        in_scope_list=true
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]+context:[[:space:]]*$ ]]; then
+        in_context_list=true
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]+depends_on:[[:space:]]*$ ]]; then
+        in_depends_on_list=true
         continue
       fi
     fi
@@ -197,6 +278,10 @@ parse_agents_config() {
     AGENTS_NAMES+=("$current_name")
     AGENTS_BRANCHES+=("$current_branch")
     AGENTS_TASKS+=("$current_task")
+    AGENTS_ROLES+=("${current_role:-build}")
+    AGENTS_SCOPES+=("$current_scope")
+    AGENTS_CONTEXTS+=("$current_context")
+    AGENTS_DEPENDS_ON+=("$current_depends_on")
   fi
 
   # Validate
@@ -208,6 +293,28 @@ parse_agents_config() {
     echo "Error: No agents defined in config file"
     return 1
   fi
+
+  # Validate depends_on references
+  local count=${#AGENTS_NAMES[@]}
+  for ((i=0; i<count; i++)); do
+    local deps="${AGENTS_DEPENDS_ON[$i]}"
+    [[ -z "$deps" ]] && continue
+    IFS=',' read -ra dep_arr <<< "$deps"
+    for dep in "${dep_arr[@]}"; do
+      if [[ "$dep" == "${AGENTS_NAMES[$i]}" ]]; then
+        echo "Error: Agent '${AGENTS_NAMES[$i]}' cannot depend on itself"
+        return 1
+      fi
+      local found=false
+      for name in "${AGENTS_NAMES[@]}"; do
+        [[ "$name" == "$dep" ]] && found=true && break
+      done
+      if ! $found; then
+        echo "Error: Agent '${AGENTS_NAMES[$i]}' depends on unknown agent '$dep'"
+        return 1
+      fi
+    done
+  done
 
   return 0
 }
@@ -282,6 +389,12 @@ create_worktrees() {
   for ((i=0; i<count; i++)); do
     local name="${AGENTS_NAMES[$i]}"
     local branch="${AGENTS_BRANCHES[$i]}"
+
+    if [[ "${AGENTS_ROLES[$i]}" == "review" ]]; then
+      echo "  Skipping worktree for review agent: $name"
+      continue
+    fi
+
     local wt_path
     wt_path=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "$name")
 
@@ -313,6 +426,12 @@ remove_worktrees() {
 
   for ((i=0; i<count; i++)); do
     local name="${AGENTS_NAMES[$i]}"
+
+    if [[ "${AGENTS_ROLES[$i]}" == "review" ]]; then
+      echo "  Skipping worktree for review agent: $name"
+      continue
+    fi
+
     local wt_path
     wt_path=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "$name")
 
@@ -331,6 +450,27 @@ remove_worktrees() {
 }
 
 # ------------------------------------------------------------------------------
+# SIGNAL / MARKER FILE MANAGEMENT
+# ------------------------------------------------------------------------------
+
+setup_signal_dir() {
+  local project_root="$1"
+  local signal_dir="$project_root/.dmux/signals"
+  rm -rf "$signal_dir"
+  mkdir -p "$signal_dir"
+  echo "$signal_dir"
+}
+
+cleanup_signal_dir() {
+  local project_root="$1"
+  local dmux_dir="$project_root/.dmux"
+  if [[ -d "$dmux_dir" ]]; then
+    rm -rf "$dmux_dir"
+    echo "  Removed signal directory: $dmux_dir"
+  fi
+}
+
+# ------------------------------------------------------------------------------
 # AGENTS COMMANDS
 # ------------------------------------------------------------------------------
 
@@ -341,8 +481,10 @@ dmux agents - Multi-agent orchestration with git worktrees + Claude
 USAGE:
   $(basename "$0") agents start [project]         Start agents from config
   $(basename "$0") agents start --config <file>   Use a custom config file
+  $(basename "$0") agents start -y                Skip confirmation prompt
   $(basename "$0") agents status [project]        Show agent pane statuses
   $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
+  $(basename "$0") agents init                    Interactively generate .dmux-agents.yml
 
 CONFIG FILE:
   By default, reads .dmux-agents.yml from the current directory or the
@@ -355,14 +497,33 @@ CONFIG FILE:
       - name: auth
         branch: feature/auth
         task: "implement JWT authentication"
+        scope:                     # optional: writable paths
+          - src/auth/
+          - src/middleware/auth.ts
+        context:                   # optional: read-only paths
+          - src/types/
       - name: catalog
         branch: feature/catalog
         task: "build product listing API"
+      - name: reviewer
+        role: review               # review agent (no worktree)
+        task: "review changes for bugs and security issues"
+        depends_on:                # wait for these agents to finish
+          - auth
+          - catalog
     main_pane: true                # include integration pane
+
+OPTIONS:
+  -y, --yes              Skip confirmation prompt before launching
+  --config <file>        Use a custom config file
+  -t, --terminal <term>  Terminal to use
 
 EXAMPLES:
   # Start agents from .dmux-agents.yml in current directory
   $(basename "$0") agents start
+
+  # Start without confirmation prompt
+  $(basename "$0") agents start -y
 
   # Start agents for a registered project
   $(basename "$0") agents start myapp
@@ -375,6 +536,9 @@ EXAMPLES:
 
   # Clean up worktrees and kill session
   $(basename "$0") agents cleanup
+
+  # Interactively create .dmux-agents.yml
+  $(basename "$0") agents init
 
 EOF
 }
@@ -432,13 +596,97 @@ resolve_project_root() {
   echo "$config_dir"
 }
 
+build_agent_prompt() {
+  local task="$1"
+  local scope="$2"
+  local context="$3"
+  local role="$4"
+  local all_branches="$5"
+
+  local prompt="$task"
+
+  if [[ "$role" == "review" ]]; then
+    if [[ -z "$prompt" ]]; then
+      prompt="Review the changes on branches ${all_branches} for bugs, security issues, and adherence to project conventions. Use git diff main..<branch> to inspect changes."
+    fi
+    echo "$prompt"
+    return
+  fi
+
+  # Build role (default)
+  if [[ -n "$scope" ]]; then
+    local scope_fmt="${scope//,/, }"
+    prompt+=" Only modify files in: ${scope_fmt}."
+  fi
+  if [[ -n "$context" ]]; then
+    local context_fmt="${context//,/, }"
+    prompt+=" You may read but not modify: ${context_fmt}."
+  fi
+
+  echo "$prompt"
+}
+
+print_launch_summary() {
+  local config_file="$1"
+  local skip_confirm="$2"
+  local count=${#AGENTS_NAMES[@]}
+
+  echo "Config: $config_file"
+  echo ""
+  printf "  %-16s %s\n" "SESSION" "$AGENTS_SESSION"
+  printf "  %-16s %s\n" "WORKTREE BASE" "$AGENTS_WORKTREE_BASE"
+  printf "  %-16s %s\n" "MAIN PANE" "$AGENTS_MAIN_PANE"
+  echo ""
+  printf "  %-16s %-24s %-8s %s\n" "AGENT" "BRANCH" "ROLE" "DEPENDS ON"
+  printf "  %-16s %-24s %-8s %s\n" "-----" "------" "----" "----------"
+
+  local worktree_count=0
+  local review_count=0
+  for ((i=0; i<count; i++)); do
+    local name="${AGENTS_NAMES[$i]}"
+    local branch="${AGENTS_BRANCHES[$i]}"
+    local role="${AGENTS_ROLES[$i]}"
+    local deps="${AGENTS_DEPENDS_ON[$i]}"
+
+    if [[ "$role" == "review" ]]; then
+      branch="—"
+      review_count=$((review_count + 1))
+    else
+      worktree_count=$((worktree_count + 1))
+    fi
+
+    local dep_display="—"
+    if [[ -n "$deps" ]]; then
+      dep_display="${deps//,/, }"
+    fi
+
+    printf "  %-16s %-24s %-8s %s\n" "$name" "$branch" "$role" "$dep_display"
+  done
+
+  echo ""
+  echo "  Worktrees to create: $worktree_count"
+  if [[ $review_count -gt 0 ]]; then
+    echo "  Review agents: $review_count (will wait for dependencies)"
+  fi
+  echo ""
+
+  if [[ "$skip_confirm" != "true" ]]; then
+    read -p "Proceed? [Y/n]: " -n 1 -r
+    echo ""
+    if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+      echo "Aborted."
+      exit 0
+    fi
+    echo ""
+  fi
+}
+
 agents_start() {
   local project="${1:-}"
+  local skip_confirm="${2:-false}"
   local config_file
 
   config_file=$(resolve_agents_config "$project") || exit 1
-
-  echo "Reading config: $config_file"
   parse_agents_config "$config_file" || exit 1
 
   local project_root
@@ -450,40 +698,67 @@ agents_start() {
     exit 1
   fi
 
+  # Print summary and confirm
+  print_launch_summary "$config_file" "$skip_confirm"
+
   local count=${#AGENTS_NAMES[@]}
-  echo "Session: $AGENTS_SESSION"
-  echo "Agents: $count"
-  echo "Project root: $project_root"
-  echo ""
 
   # Create worktrees
   echo "Setting up worktrees..."
   create_worktrees "$project_root" || exit 1
   echo ""
 
+  # Set up signal directory for marker files
+  local signal_dir
+  signal_dir=$(setup_signal_dir "$project_root")
+  echo "Signal directory: $signal_dir"
+  echo ""
+
   # Kill existing session
   tmux kill-session -t "$AGENTS_SESSION" 2>/dev/null || true
 
-  # Create tmux session with the first agent's worktree
-  local first_wt
-  first_wt=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "${AGENTS_NAMES[0]}")
-  first_wt=$(cd "$first_wt" && pwd)
+  local abs_root
+  abs_root=$(cd "$project_root" && pwd)
 
-  tmux new-session -d -s "$AGENTS_SESSION" -c "$first_wt"
+  # Collect all non-review branch names for review agent prompts
+  local all_branches=""
+  for ((i=0; i<count; i++)); do
+    if [[ "${AGENTS_ROLES[$i]}" != "review" && -n "${AGENTS_BRANCHES[$i]}" ]]; then
+      if [[ -n "$all_branches" ]]; then
+        all_branches+=", ${AGENTS_BRANCHES[$i]}"
+      else
+        all_branches="${AGENTS_BRANCHES[$i]}"
+      fi
+    fi
+  done
+
+  # Determine working directory for each agent
+  local first_cwd
+  if [[ "${AGENTS_ROLES[0]}" == "review" ]]; then
+    first_cwd="$abs_root"
+  else
+    first_cwd=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "${AGENTS_NAMES[0]}")
+    first_cwd=$(cd "$first_cwd" && pwd)
+  fi
+
+  # Create tmux session with the first agent's directory
+  tmux new-session -d -s "$AGENTS_SESSION" -c "$first_cwd"
   tmux rename-window -t "$AGENTS_SESSION:0" "${AGENTS_NAMES[0]}"
 
   # Create panes for remaining agents
   for ((i=1; i<count; i++)); do
-    local wt_path
-    wt_path=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "${AGENTS_NAMES[$i]}")
-    wt_path=$(cd "$wt_path" && pwd)
-    tmux split-window -t "$AGENTS_SESSION:0" -c "$wt_path"
+    local pane_cwd
+    if [[ "${AGENTS_ROLES[$i]}" == "review" ]]; then
+      pane_cwd="$abs_root"
+    else
+      pane_cwd=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "${AGENTS_NAMES[$i]}")
+      pane_cwd=$(cd "$pane_cwd" && pwd)
+    fi
+    tmux split-window -t "$AGENTS_SESSION:0" -c "$pane_cwd"
   done
 
   # Add main integration pane if configured
   if [[ "$AGENTS_MAIN_PANE" == "true" ]]; then
-    local abs_root
-    abs_root=$(cd "$project_root" && pwd)
     tmux split-window -t "$AGENTS_SESSION:0" -c "$abs_root"
   fi
 
@@ -493,13 +768,41 @@ agents_start() {
   # Send claude commands to agent panes
   echo "Launching agents..."
   for ((i=0; i<count; i++)); do
-    local task="${AGENTS_TASKS[$i]}"
     local name="${AGENTS_NAMES[$i]}"
-    echo "  $name: claude \"$task\""
-    if [[ -n "$task" ]]; then
-      tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude \"$task\"" Enter
+    local deps="${AGENTS_DEPENDS_ON[$i]}"
+    local full_prompt
+    full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches")
+
+    # Escape double quotes in prompt for shell embedding
+    local escaped_prompt="${full_prompt//\"/\\\"}"
+
+    if [[ -n "$deps" ]]; then
+      # Dependent agent: wait for marker files, then launch
+      local dep_display="${deps//,/, }"
+      echo "  $name: waiting for $dep_display, then claude \"$full_prompt\""
+
+      IFS=',' read -ra dep_arr <<< "$deps"
+      local wait_cmd="echo 'Waiting for agents: ${dep_display}...'; "
+      wait_cmd+="while true; do all_done=true; "
+      for dep in "${dep_arr[@]}"; do
+        wait_cmd+="if [ -f '${signal_dir}/${dep}.done' ]; then echo '  ${dep}: done (exit '\$(cat \"${signal_dir}/${dep}.done\")')'; else echo '  ${dep}: pending'; all_done=false; fi; "
+      done
+      wait_cmd+="\$all_done && break; sleep 10; done; "
+      wait_cmd+="echo 'All dependencies finished.'; "
+      if [[ -n "$full_prompt" ]]; then
+        wait_cmd+="claude \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'"
+      else
+        wait_cmd+="claude; echo \$? > '${signal_dir}/${name}.done'"
+      fi
+      tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
     else
-      tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude" Enter
+      # Independent agent: launch immediately with marker file on exit
+      echo "  $name: claude \"$full_prompt\""
+      if [[ -n "$full_prompt" ]]; then
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'" Enter
+      else
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude; echo \$? > '${signal_dir}/${name}.done'" Enter
+      fi
     fi
   done
 
@@ -535,6 +838,10 @@ agents_status() {
   config_file=$(resolve_agents_config "$project") || exit 1
   parse_agents_config "$config_file" || exit 1
 
+  local project_root
+  project_root=$(resolve_project_root "$config_file" "$project")
+  local signal_dir="$project_root/.dmux/signals"
+
   # Check if session exists
   if ! tmux has-session -t "$AGENTS_SESSION" 2>/dev/null; then
     echo "Session '$AGENTS_SESSION' is not running."
@@ -544,13 +851,20 @@ agents_status() {
   local count=${#AGENTS_NAMES[@]}
   echo "Session: $AGENTS_SESSION"
   echo ""
-  printf "  %-16s %-24s %s\n" "AGENT" "BRANCH" "STATUS"
-  printf "  %-16s %-24s %s\n" "-----" "------" "------"
+  printf "  %-16s %-24s %-8s %s\n" "AGENT" "BRANCH" "ROLE" "STATUS"
+  printf "  %-16s %-24s %-8s %s\n" "-----" "------" "----" "------"
 
   for ((i=0; i<count; i++)); do
     local name="${AGENTS_NAMES[$i]}"
     local branch="${AGENTS_BRANCHES[$i]}"
+    local role="${AGENTS_ROLES[$i]}"
+    local deps="${AGENTS_DEPENDS_ON[$i]}"
     local status="unknown"
+
+    # Review agents have no dedicated branch
+    if [[ "$role" == "review" ]]; then
+      branch="—"
+    fi
 
     # Check if pane exists and capture last line
     if tmux list-panes -t "$AGENTS_SESSION:0" -F '#{pane_index}' 2>/dev/null | grep -q "^${i}$"; then
@@ -568,7 +882,19 @@ agents_status() {
       status="no pane"
     fi
 
-    printf "  %-16s %-24s %s\n" "$name" "$branch" "$status"
+    # Refine idle status with signal/depends_on info
+    if [[ "$status" == "idle" && -d "$signal_dir" ]]; then
+      if [[ -f "${signal_dir}/${name}.done" ]]; then
+        local exit_code
+        exit_code=$(cat "${signal_dir}/${name}.done" 2>/dev/null)
+        status="done (exit ${exit_code:-?})"
+      elif [[ -n "$deps" ]]; then
+        local dep_display="${deps//,/, }"
+        status="waiting (${dep_display})"
+      fi
+    fi
+
+    printf "  %-16s %-24s %-8s %s\n" "$name" "$branch" "$role" "$status"
   done
 
   if [[ "$AGENTS_MAIN_PANE" == "true" ]]; then
@@ -600,12 +926,118 @@ agents_cleanup() {
 
   echo ""
 
+  # Remove signal directory
+  cleanup_signal_dir "$project_root"
+
   # Remove worktrees
   echo "Removing worktrees..."
   remove_worktrees "$project_root"
 
   echo ""
   echo "Cleanup complete."
+}
+
+agents_init() {
+  local output_file=".dmux-agents.yml"
+
+  if [[ -f "$output_file" ]]; then
+    echo "Warning: $output_file already exists."
+    read -p "Overwrite? [y/N]: " -n 1 -r
+    echo ""
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+      echo "Aborted."
+      return 0
+    fi
+    echo ""
+  fi
+
+  # Session name
+  read -p "Session name: " -r session_name
+  if [[ -z "$session_name" ]]; then
+    echo "Error: Session name is required"
+    return 1
+  fi
+
+  # Worktree base
+  read -p "Worktree base [..]: " -r worktree_base
+  worktree_base="${worktree_base:-..}"
+
+  # Main pane
+  read -p "Include main integration pane? [Y/n]: " -n 1 -r
+  echo ""
+  local main_pane="true"
+  if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+    main_pane="false"
+  fi
+
+  echo ""
+
+  # Collect agents
+  local agents_yaml=""
+  local agent_num=1
+  local add_more="Y"
+
+  while [[ "$add_more" =~ ^[Yy]$ || -z "$add_more" ]]; do
+    echo "Agent $agent_num:"
+    read -p "  Name: " -r agent_name
+    if [[ -z "$agent_name" ]]; then
+      echo "  Error: Agent name is required"
+      continue
+    fi
+
+    # Role
+    read -p "  Role (build/review) [build]: " -r agent_role
+    agent_role="${agent_role:-build}"
+
+    local agent_branch=""
+    if [[ "$agent_role" != "review" ]]; then
+      read -p "  Branch: " -r agent_branch
+    fi
+
+    read -p "  Task: " -r agent_task
+
+    # Depends on (for review agents especially)
+    local agent_depends=""
+    read -p "  Depends on (comma-separated, or empty): " -r agent_depends
+
+    # Build YAML for this agent
+    agents_yaml+="  - name: ${agent_name}"$'\n'
+    if [[ -n "$agent_branch" ]]; then
+      agents_yaml+="    branch: ${agent_branch}"$'\n'
+    fi
+    if [[ "$agent_role" != "build" ]]; then
+      agents_yaml+="    role: ${agent_role}"$'\n'
+    fi
+    if [[ -n "$agent_task" ]]; then
+      agents_yaml+="    task: \"${agent_task}\""$'\n'
+    fi
+    if [[ -n "$agent_depends" ]]; then
+      agents_yaml+="    depends_on:"$'\n'
+      IFS=',' read -ra dep_items <<< "$agent_depends"
+      for dep in "${dep_items[@]}"; do
+        dep="${dep#"${dep%%[![:space:]]*}"}"
+        dep="${dep%"${dep##*[![:space:]]}"}"
+        agents_yaml+="      - ${dep}"$'\n'
+      done
+    fi
+
+    echo ""
+    agent_num=$((agent_num + 1))
+    read -p "Add another agent? [Y/n]: " -n 1 -r add_more
+    echo ""
+    echo ""
+  done
+
+  # Write YAML
+  cat > "$output_file" << EOF
+session: ${session_name}
+worktree_base: ${worktree_base}
+main_pane: ${main_pane}
+
+agents:
+${agents_yaml}EOF
+
+  echo "Wrote $output_file"
 }
 
 handle_agents_command() {
@@ -621,6 +1053,7 @@ handle_agents_command() {
 
   # Parse agents subcommand options
   local project=""
+  local skip_confirm="false"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config)
@@ -632,6 +1065,10 @@ handle_agents_command() {
         [[ -z "${2:-}" ]] && { echo "Error: -t requires terminal name"; return 1; }
         TERMINAL="$2"
         shift 2
+        ;;
+      -y|--yes)
+        skip_confirm="true"
+        shift
         ;;
       -h|--help)
         agents_usage
@@ -650,9 +1087,10 @@ handle_agents_command() {
   done
 
   case "$action" in
-    start)   agents_start "$project" ;;
+    start)   agents_start "$project" "$skip_confirm" ;;
     status)  agents_status "$project" ;;
     cleanup) agents_cleanup "$project" ;;
+    init)    agents_init ;;
     help)    agents_usage ;;
     *)
       echo "Error: Unknown agents action '$action'"
@@ -692,8 +1130,10 @@ OPTIONS:
 AGENTS (multi-agent orchestration):
   $(basename "$0") agents start [project]         Read .dmux-agents.yml, create worktrees, launch agents
   $(basename "$0") agents start --config <file>   Use a custom config file
+  $(basename "$0") agents start -y                Skip confirmation prompt
   $(basename "$0") agents status [project]        Show agent pane statuses
   $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
+  $(basename "$0") agents init                    Interactively generate .dmux-agents.yml
   $(basename "$0") agents help                    Show agents help
 
 EXAMPLES:

@@ -1043,7 +1043,8 @@ worktree_base: ${worktree_base}
 main_pane: ${main_pane}
 
 agents:
-${agents_yaml}EOF
+${agents_yaml}
+EOF
 
   echo "Wrote $output_file"
 }

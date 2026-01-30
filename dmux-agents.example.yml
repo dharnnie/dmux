@@ -1,0 +1,17 @@
+# dmux agents configuration
+# Place as .dmux-agents.yml in your project root
+
+session: my-api-agents
+worktree_base: ..              # relative to project root (default: "..")
+main_pane: true                # include a bottom pane for integration work
+
+agents:
+  - name: auth
+    branch: feature/auth
+    task: "implement JWT authentication with refresh tokens"
+  - name: catalog
+    branch: feature/catalog
+    task: "build product listing API with search and filters"
+  - name: admin
+    branch: feature/admin
+    task: "create admin dashboard CRUD endpoints"

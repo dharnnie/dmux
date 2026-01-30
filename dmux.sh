@@ -89,6 +89,7 @@ AGENTS_SCOPES=()     # comma-separated writable paths, or empty
 AGENTS_CONTEXTS=()   # comma-separated read-only paths, or empty
 AGENTS_ROLES=()      # "build" (default) or "review"
 AGENTS_DEPENDS_ON=() # comma-separated agent names, or empty
+AGENTS_AUTO_ACCEPT=() # "true" or "false"
 
 # Strip inline YAML comments (# ...) from a value, preserving # inside quotes
 strip_yaml_comment() {
@@ -128,6 +129,7 @@ parse_agents_config() {
   AGENTS_CONTEXTS=()
   AGENTS_ROLES=()
   AGENTS_DEPENDS_ON=()
+  AGENTS_AUTO_ACCEPT=()
 
   local in_agents_list=false
   local current_name=""
@@ -140,6 +142,7 @@ parse_agents_config() {
   local in_context_list=false
   local current_depends_on=""
   local in_depends_on_list=false
+  local current_auto_accept=""
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Skip comments and empty lines
@@ -157,6 +160,7 @@ parse_agents_config() {
         AGENTS_SCOPES+=("$current_scope")
         AGENTS_CONTEXTS+=("$current_context")
         AGENTS_DEPENDS_ON+=("$current_depends_on")
+        AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
       fi
       current_name=$(strip_yaml_comment "${BASH_REMATCH[1]}")
       current_name="${current_name#"${current_name%%[![:space:]]*}"}"
@@ -167,6 +171,7 @@ parse_agents_config() {
       current_scope=""
       current_context=""
       current_depends_on=""
+      current_auto_accept=""
       in_scope_list=false
       in_context_list=false
       in_depends_on_list=false
@@ -231,6 +236,12 @@ parse_agents_config() {
         current_role="${current_role%"${current_role##*[![:space:]]}"}"
         continue
       fi
+      if [[ "$line" =~ ^[[:space:]]+auto_accept:[[:space:]]*(.*) ]]; then
+        current_auto_accept=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        current_auto_accept="${current_auto_accept#"${current_auto_accept%%[![:space:]]*}"}"
+        current_auto_accept="${current_auto_accept%"${current_auto_accept##*[![:space:]]}"}"
+        continue
+      fi
       if [[ "$line" =~ ^[[:space:]]+scope:[[:space:]]*$ ]]; then
         in_scope_list=true
         continue
@@ -282,6 +293,7 @@ parse_agents_config() {
     AGENTS_SCOPES+=("$current_scope")
     AGENTS_CONTEXTS+=("$current_context")
     AGENTS_DEPENDS_ON+=("$current_depends_on")
+    AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
   fi
 
   # Validate
@@ -500,6 +512,7 @@ CONFIG FILE:
       - name: catalog
         branch: feature/catalog
         task: "build product listing API"
+        auto_accept: true          # skip permission prompts
       - name: reviewer
         role: review               # review agent (no worktree)
         task: "review changes for bugs and security issues"
@@ -618,6 +631,8 @@ build_agent_prompt() {
     prompt+=" You may read but not modify: ${context_fmt}."
   fi
 
+  prompt+=" When you are done, commit all your changes with a descriptive commit message."
+
   echo "$prompt"
 }
 
@@ -632,8 +647,8 @@ print_launch_summary() {
   printf "  %-16s %s\n" "WORKTREE BASE" "$AGENTS_WORKTREE_BASE"
   printf "  %-16s %s\n" "MAIN PANE" "$AGENTS_MAIN_PANE"
   echo ""
-  printf "  %-16s %-24s %-8s %s\n" "AGENT" "BRANCH" "ROLE" "DEPENDS ON"
-  printf "  %-16s %-24s %-8s %s\n" "-----" "------" "----" "----------"
+  printf "  %-16s %-24s %-8s %-6s %s\n" "AGENT" "BRANCH" "ROLE" "AUTO" "DEPENDS ON"
+  printf "  %-16s %-24s %-8s %-6s %s\n" "-----" "------" "----" "----" "----------"
 
   local worktree_count=0
   local review_count=0
@@ -642,6 +657,7 @@ print_launch_summary() {
     local branch="${AGENTS_BRANCHES[$i]}"
     local role="${AGENTS_ROLES[$i]}"
     local deps="${AGENTS_DEPENDS_ON[$i]}"
+    local auto="${AGENTS_AUTO_ACCEPT[$i]}"
 
     if [[ "$role" == "review" ]]; then
       branch="—"
@@ -655,7 +671,7 @@ print_launch_summary() {
       dep_display="${deps//,/, }"
     fi
 
-    printf "  %-16s %-24s %-8s %s\n" "$name" "$branch" "$role" "$dep_display"
+    printf "  %-16s %-24s %-8s %-6s %s\n" "$name" "$branch" "$role" "$auto" "$dep_display"
   done
 
   echo ""
@@ -703,17 +719,17 @@ agents_start() {
   create_worktrees "$project_root" || exit 1
   echo ""
 
-  # Set up signal directory for marker files
+  local abs_root
+  abs_root=$(cd "$project_root" && pwd)
+
+  # Set up signal directory for marker files (use absolute path so all agents resolve it correctly)
   local signal_dir
-  signal_dir=$(setup_signal_dir "$project_root")
+  signal_dir=$(setup_signal_dir "$abs_root")
   echo "Signal directory: $signal_dir"
   echo ""
 
   # Kill existing session
   tmux kill-session -t "$AGENTS_SESSION" 2>/dev/null || true
-
-  local abs_root
-  abs_root=$(cd "$project_root" && pwd)
 
   # Collect all non-review branch names for review agent prompts
   local all_branches=""
@@ -771,10 +787,16 @@ agents_start() {
     # Escape double quotes in prompt for shell embedding
     local escaped_prompt="${full_prompt//\"/\\\"}"
 
+    # Build claude command with optional --dangerously-skip-permissions
+    local claude_cmd="claude"
+    if [[ "${AGENTS_AUTO_ACCEPT[$i]}" == "true" ]]; then
+      claude_cmd="claude --dangerously-skip-permissions"
+    fi
+
     if [[ -n "$deps" ]]; then
       # Dependent agent: wait for marker files, then launch
       local dep_display="${deps//,/, }"
-      echo "  $name: waiting for $dep_display, then claude \"$full_prompt\""
+      echo "  $name: waiting for $dep_display, then ${claude_cmd} \"$full_prompt\""
 
       IFS=',' read -ra dep_arr <<< "$deps"
       local wait_cmd="echo 'Waiting for agents: ${dep_display}...'; "
@@ -791,19 +813,19 @@ agents_start() {
       done
       wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="claude \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'"
+        wait_cmd+="${claude_cmd} \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'"
       else
-        wait_cmd+="claude; echo \$? > '${signal_dir}/${name}.done'"
+        wait_cmd+="${claude_cmd}; echo \$? > '${signal_dir}/${name}.done'"
       fi
       wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
     else
       # Independent agent: launch immediately with marker file on exit
-      echo "  $name: claude \"$full_prompt\""
+      echo "  $name: ${claude_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'" Enter
       else
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude; echo \$? > '${signal_dir}/${name}.done'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; echo \$? > '${signal_dir}/${name}.done'" Enter
       fi
     fi
   done
@@ -1027,6 +1049,17 @@ agents_init() {
         dep="${dep%"${dep##*[![:space:]]}"}"
         agents_yaml+="      - ${dep}"$'\n'
       done
+    fi
+
+    # Auto-accept
+    local agent_auto_accept="false"
+    read -p "  Auto-accept? (skip permission prompts) [y/N]: " -n 1 -r
+    echo ""
+    if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+      agent_auto_accept="true"
+    fi
+    if [[ "$agent_auto_accept" == "true" ]]; then
+      agents_yaml+="    auto_accept: true"$'\n'
     fi
 
     echo ""

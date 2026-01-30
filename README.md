@@ -147,6 +147,7 @@ agents:
   - name: admin
     branch: feature/admin
     task: "create admin dashboard CRUD endpoints"
+    auto_accept: true              # skip permission prompts
 ```
 
 2. Run it:
@@ -198,6 +199,7 @@ This will:
 | `agents[].context` | no | — | List of read-only file paths (appended to prompt) |
 | `agents[].role` | no | `build` | Agent role: `build` (default) or `review` |
 | `agents[].depends_on` | no | — | List of agent names this agent waits for before launching |
+| `agents[].auto_accept` | no | `false` | When `true`, runs `claude --dangerously-skip-permissions` for fully autonomous operation |
 
 Worktree paths follow the pattern: `{worktree_base}/{session}-{agent_name}`
 
@@ -232,6 +234,7 @@ agents:
 - **context** tells the agent it may read but not modify the listed paths.
 - **role: review** skips worktree creation; the pane opens at the project root. If no `task` is provided, a default review prompt referencing all build agent branches is generated.
 - **depends_on** lists agent names that must finish before this agent launches. The dependent agent's pane will show "Waiting for agents: ..." until all dependencies complete. Dependency completion is tracked via marker files in `.dmux/signals/`.
+- **auto_accept** when set to `true`, launches `claude --dangerously-skip-permissions` so the agent runs fully autonomously without permission prompts.
 
 ### Scaffolding with `agents init`
 
@@ -241,7 +244,7 @@ Generate a `.dmux-agents.yml` interactively:
 dmux agents init
 ```
 
-This walks you through session name, worktree base, main pane, and each agent's name, branch, task, role, and dependencies. It writes the result to `.dmux-agents.yml` in the current directory.
+This walks you through session name, worktree base, main pane, and each agent's name, branch, task, role, dependencies, and auto-accept setting. It writes the result to `.dmux-agents.yml` in the current directory.
 
 ### Pre-Launch Summary
 
@@ -254,11 +257,11 @@ Config: .dmux-agents.yml
   WORKTREE BASE    ..
   MAIN PANE        true
 
-  AGENT            BRANCH                   ROLE     DEPENDS ON
-  -----            ------                   ----     ----------
-  auth             feature/auth             build    —
-  catalog          feature/catalog          build    —
-  reviewer         —                        review   auth, catalog
+  AGENT            BRANCH                   ROLE     AUTO   DEPENDS ON
+  -----            ------                   ----     ----   ----------
+  auth             feature/auth             build    false  —
+  catalog          feature/catalog          build    false  —
+  reviewer         —                        review   false  auth, catalog
 
   Worktrees to create: 2
   Review agents: 1 (will wait for dependencies)

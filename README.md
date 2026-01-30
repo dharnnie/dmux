@@ -159,7 +159,6 @@ This will:
 - Create a git worktree per agent (e.g. `../my-api-agents-auth`)
 - Launch a tmux session with one pane per agent + a main integration pane
 - Run `claude "task..."` in each agent pane automatically
-- Initialize git submodules in each worktree (so [claude-cortex](https://github.com/dharnnie/claude-cortex) rules apply)
 
 ### Session Layout
 
@@ -405,7 +404,13 @@ This kills the tmux session and removes all worktree directories. The branches r
 
 ### How claude-cortex Fits In
 
-Each worktree is a full copy of your repo, so `CLAUDE.md` and any [claude-cortex](https://github.com/dharnnie/claude-cortex) submodule rules are automatically available to every agent. Submodules are initialized in each worktree during setup.
+Each worktree is a full copy of your repo, so `CLAUDE.md` and any [claude-cortex](https://github.com/dharnnie/claude-cortex) rules are automatically available to every agent. Install cortex rules into your project before running agents:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dharnnie/claude-cortex/main/install.sh | bash
+```
+
+> **Note:** claude-cortex no longer uses git submodules. If you previously added it as a submodule, see the [cortex README](https://github.com/dharnnie/claude-cortex) for the new install-script approach.
 
 ## How it works
 

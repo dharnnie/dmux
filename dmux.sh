@@ -412,11 +412,6 @@ create_worktrees() {
       fi
     fi
 
-    # Initialize submodules in the worktree
-    if [[ -f "$wt_path/.gitmodules" ]]; then
-      echo "  Initializing submodules in $wt_path"
-      git -C "$wt_path" submodule update --init 2>/dev/null || true
-    fi
   done
 }
 

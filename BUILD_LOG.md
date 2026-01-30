@@ -126,6 +126,31 @@ Marker files still mean "claude exited" not "task complete." This is acceptable 
 
 ---
 
+## Session 5: Failure-aware agent dependencies
+
+**Goal:** When a dependency fails, dependent agents should detect it, skip launching, and report the failure clearly.
+
+### Problem
+
+Dependent agents blindly launched after their dependencies finished, regardless of whether the dependency exited successfully or with an error. `agents status` showed raw exit codes (`done (exit 1)`) with no semantic distinction between success, failure, and blocked agents.
+
+### What we built
+
+- **Exit code checking before launch** — After the dependency wait loop finishes, the dependent agent now reads each dependency's `.done` file and checks for non-zero exit codes. If any dependency failed, the agent writes `99` to its own `.done` file and skips launching claude entirely.
+
+- **Sentinel exit code 99** — Used as a "blocked by failed dependency" marker, distinguishable from claude's own exit codes. This propagates through dependency chains: if A fails, B gets blocked (99), and C which depends on B also gets blocked (99).
+
+- **Improved `agents status` display** — Status now shows semantic labels:
+  - Exit 0 → `done`
+  - Exit 99 → `blocked` (dependency failed)
+  - Any other non-zero → `failed (exit N)`
+
+### Design decision: sentinel code vs. separate file
+
+We chose a sentinel exit code (99) over a separate `.failed` marker file because it keeps the coordination mechanism simple — one file per agent, one value to check. The exit code is already being written; we just interpret it more carefully.
+
+---
+
 ## Implementation status
 
 | Feature | Status |
@@ -140,3 +165,4 @@ Marker files still mean "claude exited" not "task complete." This is acceptable 
 | Pre-launch summary + confirmation | Done |
 | `--yes` flag | Done |
 | README + example updates | Done |
+| Failure-aware dependencies | Done |

@@ -789,11 +789,18 @@ agents_start() {
       done
       wait_cmd+="\$all_done && break; sleep 10; done; "
       wait_cmd+="echo 'All dependencies finished.'; "
+      # Check if any dependency failed before launching
+      wait_cmd+="any_failed=false; "
+      for dep in "${dep_arr[@]}"; do
+        wait_cmd+="dep_code=\$(cat '${signal_dir}/${dep}.done'); if [ \"\$dep_code\" != '0' ]; then echo 'Dependency ${dep} failed (exit '\$dep_code')'; any_failed=true; fi; "
+      done
+      wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'; else "
       if [[ -n "$full_prompt" ]]; then
         wait_cmd+="claude \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'"
       else
         wait_cmd+="claude; echo \$? > '${signal_dir}/${name}.done'"
       fi
+      wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
     else
       # Independent agent: launch immediately with marker file on exit
@@ -887,7 +894,13 @@ agents_status() {
       if [[ -f "${signal_dir}/${name}.done" ]]; then
         local exit_code
         exit_code=$(cat "${signal_dir}/${name}.done" 2>/dev/null)
-        status="done (exit ${exit_code:-?})"
+        if [[ "$exit_code" == "0" ]]; then
+          status="done"
+        elif [[ "$exit_code" == "99" ]]; then
+          status="blocked"
+        else
+          status="failed (exit ${exit_code:-?})"
+        fi
       elif [[ -n "$deps" ]]; then
         local dep_display="${deps//,/, }"
         status="waiting (${dep_display})"

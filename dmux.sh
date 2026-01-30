@@ -75,6 +75,144 @@ get_project_names() {
 }
 
 # ------------------------------------------------------------------------------
+# AGENTS YAML CONFIG PARSER
+# ------------------------------------------------------------------------------
+
+# Global arrays populated by parse_agents_config()
+AGENTS_SESSION=""
+AGENTS_WORKTREE_BASE=".."
+AGENTS_MAIN_PANE="true"
+AGENTS_NAMES=()
+AGENTS_BRANCHES=()
+AGENTS_TASKS=()
+
+# Strip inline YAML comments (# ...) from a value, preserving # inside quotes
+strip_yaml_comment() {
+  local val="$1"
+  # If value is quoted, strip quotes and return
+  if [[ "$val" =~ ^\"(.*)\"[[:space:]]*(#.*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$val" =~ ^\'(.*)\'[[:space:]]*(#.*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  # Unquoted: strip trailing # comment
+  val="${val%%[[:space:]]#*}"
+  # Trim trailing whitespace
+  val="${val%"${val##*[![:space:]]}"}"
+  echo "$val"
+}
+
+parse_agents_config() {
+  local config_file="$1"
+
+  if [[ ! -f "$config_file" ]]; then
+    echo "Error: Config file not found: $config_file"
+    return 1
+  fi
+
+  # Reset globals
+  AGENTS_SESSION=""
+  AGENTS_WORKTREE_BASE=".."
+  AGENTS_MAIN_PANE="true"
+  AGENTS_NAMES=()
+  AGENTS_BRANCHES=()
+  AGENTS_TASKS=()
+
+  local in_agents_list=false
+  local current_name=""
+  local current_branch=""
+  local current_task=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    # Detect agent list item start (- name:)
+    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*(.*) ]]; then
+      # Save previous agent if any
+      if [[ -n "$current_name" ]]; then
+        AGENTS_NAMES+=("$current_name")
+        AGENTS_BRANCHES+=("$current_branch")
+        AGENTS_TASKS+=("$current_task")
+      fi
+      current_name=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      current_name="${current_name#"${current_name%%[![:space:]]*}"}"
+      current_name="${current_name%"${current_name##*[![:space:]]}"}"
+      current_branch=""
+      current_task=""
+      in_agents_list=true
+      continue
+    fi
+
+    # Inside an agent entry — parse branch and task
+    if $in_agents_list; then
+      if [[ "$line" =~ ^[[:space:]]+branch:[[:space:]]*(.*) ]]; then
+        current_branch=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        current_branch="${current_branch#"${current_branch%%[![:space:]]*}"}"
+        current_branch="${current_branch%"${current_branch##*[![:space:]]}"}"
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]+task:[[:space:]]*(.*) ]]; then
+        current_task=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        current_task="${current_task#"${current_task%%[![:space:]]*}"}"
+        current_task="${current_task%"${current_task##*[![:space:]]}"}"
+        continue
+      fi
+    fi
+
+    # Top-level keys
+    if [[ "$line" =~ ^session:[[:space:]]*(.*) ]]; then
+      AGENTS_SESSION=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      AGENTS_SESSION="${AGENTS_SESSION#"${AGENTS_SESSION%%[![:space:]]*}"}"
+      AGENTS_SESSION="${AGENTS_SESSION%"${AGENTS_SESSION##*[![:space:]]}"}"
+      in_agents_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^worktree_base:[[:space:]]*(.*) ]]; then
+      AGENTS_WORKTREE_BASE=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      AGENTS_WORKTREE_BASE="${AGENTS_WORKTREE_BASE#"${AGENTS_WORKTREE_BASE%%[![:space:]]*}"}"
+      AGENTS_WORKTREE_BASE="${AGENTS_WORKTREE_BASE%"${AGENTS_WORKTREE_BASE##*[![:space:]]}"}"
+      in_agents_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^main_pane:[[:space:]]*(.*) ]]; then
+      AGENTS_MAIN_PANE=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      AGENTS_MAIN_PANE="${AGENTS_MAIN_PANE#"${AGENTS_MAIN_PANE%%[![:space:]]*}"}"
+      AGENTS_MAIN_PANE="${AGENTS_MAIN_PANE%"${AGENTS_MAIN_PANE##*[![:space:]]}"}"
+      in_agents_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^agents:[[:space:]]*$ ]]; then
+      in_agents_list=false
+      continue
+    fi
+  done < "$config_file"
+
+  # Save last agent
+  if [[ -n "$current_name" ]]; then
+    AGENTS_NAMES+=("$current_name")
+    AGENTS_BRANCHES+=("$current_branch")
+    AGENTS_TASKS+=("$current_task")
+  fi
+
+  # Validate
+  if [[ -z "$AGENTS_SESSION" ]]; then
+    echo "Error: 'session' is required in config file"
+    return 1
+  fi
+  if [[ ${#AGENTS_NAMES[@]} -eq 0 ]]; then
+    echo "Error: No agents defined in config file"
+    return 1
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # TERMINAL LAUNCHERS
 # ------------------------------------------------------------------------------
 
@@ -118,6 +256,413 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# WORKTREE MANAGEMENT
+# ------------------------------------------------------------------------------
+
+get_worktree_path() {
+  local project_root="$1"
+  local worktree_base="$2"
+  local session="$3"
+  local agent_name="$4"
+
+  local base_dir
+  if [[ "$worktree_base" == /* ]]; then
+    base_dir="$worktree_base"
+  else
+    base_dir="$project_root/$worktree_base"
+  fi
+
+  echo "$base_dir/${session}-${agent_name}"
+}
+
+create_worktrees() {
+  local project_root="$1"
+  local count=${#AGENTS_NAMES[@]}
+
+  for ((i=0; i<count; i++)); do
+    local name="${AGENTS_NAMES[$i]}"
+    local branch="${AGENTS_BRANCHES[$i]}"
+    local wt_path
+    wt_path=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "$name")
+
+    if [[ -d "$wt_path" ]]; then
+      echo "  Worktree already exists: $wt_path (skipping)"
+      continue
+    fi
+
+    echo "  Creating worktree: $wt_path (branch: $branch)"
+    if ! git -C "$project_root" worktree add "$wt_path" -b "$branch" 2>/dev/null; then
+      # Branch may already exist, try without -b
+      if ! git -C "$project_root" worktree add "$wt_path" "$branch" 2>/dev/null; then
+        echo "  Error: Failed to create worktree for agent '$name' (branch: $branch)"
+        return 1
+      fi
+    fi
+
+    # Initialize submodules in the worktree
+    if [[ -f "$wt_path/.gitmodules" ]]; then
+      echo "  Initializing submodules in $wt_path"
+      git -C "$wt_path" submodule update --init 2>/dev/null || true
+    fi
+  done
+}
+
+remove_worktrees() {
+  local project_root="$1"
+  local count=${#AGENTS_NAMES[@]}
+
+  for ((i=0; i<count; i++)); do
+    local name="${AGENTS_NAMES[$i]}"
+    local wt_path
+    wt_path=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "$name")
+
+    if [[ -d "$wt_path" ]]; then
+      echo "  Removing worktree: $wt_path"
+      git -C "$project_root" worktree remove "$wt_path" --force 2>/dev/null || {
+        echo "  Warning: Could not remove worktree $wt_path (may need manual cleanup)"
+      }
+    else
+      echo "  Worktree not found: $wt_path (skipping)"
+    fi
+  done
+
+  # Prune stale worktree references
+  git -C "$project_root" worktree prune 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------------------
+# AGENTS COMMANDS
+# ------------------------------------------------------------------------------
+
+agents_usage() {
+  cat << EOF
+dmux agents - Multi-agent orchestration with git worktrees + Claude
+
+USAGE:
+  $(basename "$0") agents start [project]         Start agents from config
+  $(basename "$0") agents start --config <file>   Use a custom config file
+  $(basename "$0") agents status [project]        Show agent pane statuses
+  $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
+
+CONFIG FILE:
+  By default, reads .dmux-agents.yml from the current directory or the
+  registered project's directory.
+
+  Format:
+    session: my-api-agents
+    worktree_base: ..              # relative to project root
+    agents:
+      - name: auth
+        branch: feature/auth
+        task: "implement JWT authentication"
+      - name: catalog
+        branch: feature/catalog
+        task: "build product listing API"
+    main_pane: true                # include integration pane
+
+EXAMPLES:
+  # Start agents from .dmux-agents.yml in current directory
+  $(basename "$0") agents start
+
+  # Start agents for a registered project
+  $(basename "$0") agents start myapp
+
+  # Start agents with a custom config
+  $(basename "$0") agents start --config ~/configs/agents.yml
+
+  # Check agent statuses
+  $(basename "$0") agents status
+
+  # Clean up worktrees and kill session
+  $(basename "$0") agents cleanup
+
+EOF
+}
+
+resolve_agents_config() {
+  local config_file="${AGENTS_CONFIG_FILE:-}"
+  local project="${1:-}"
+
+  # Explicit --config takes priority
+  if [[ -n "$config_file" ]]; then
+    echo "$config_file"
+    return 0
+  fi
+
+  # If project name given, look in project directory
+  if [[ -n "$project" ]]; then
+    local project_path
+    project_path=$(get_project_path "$project")
+    if [[ -n "$project_path" && -f "$project_path/.dmux-agents.yml" ]]; then
+      echo "$project_path/.dmux-agents.yml"
+      return 0
+    fi
+  fi
+
+  # Default: current directory
+  if [[ -f ".dmux-agents.yml" ]]; then
+    echo ".dmux-agents.yml"
+    return 0
+  fi
+
+  echo "Error: No .dmux-agents.yml found"
+  echo "  Looked in: ${project:+$(get_project_path "$project"), }$(pwd)"
+  echo ""
+  echo "Create a .dmux-agents.yml or use --config <file>"
+  return 1
+}
+
+resolve_project_root() {
+  local config_file="$1"
+  local project="${2:-}"
+
+  # If project name given, use its registered path
+  if [[ -n "$project" ]]; then
+    local project_path
+    project_path=$(get_project_path "$project")
+    if [[ -n "$project_path" ]]; then
+      echo "$project_path"
+      return 0
+    fi
+  fi
+
+  # Otherwise use the directory containing the config file
+  local config_dir
+  config_dir=$(cd "$(dirname "$config_file")" && pwd)
+  echo "$config_dir"
+}
+
+agents_start() {
+  local project="${1:-}"
+  local config_file
+
+  config_file=$(resolve_agents_config "$project") || exit 1
+
+  echo "Reading config: $config_file"
+  parse_agents_config "$config_file" || exit 1
+
+  local project_root
+  project_root=$(resolve_project_root "$config_file" "$project")
+
+  # Validate git repo
+  if ! git -C "$project_root" rev-parse --git-dir &>/dev/null; then
+    echo "Error: $project_root is not a git repository"
+    exit 1
+  fi
+
+  local count=${#AGENTS_NAMES[@]}
+  echo "Session: $AGENTS_SESSION"
+  echo "Agents: $count"
+  echo "Project root: $project_root"
+  echo ""
+
+  # Create worktrees
+  echo "Setting up worktrees..."
+  create_worktrees "$project_root" || exit 1
+  echo ""
+
+  # Kill existing session
+  tmux kill-session -t "$AGENTS_SESSION" 2>/dev/null || true
+
+  # Create tmux session with the first agent's worktree
+  local first_wt
+  first_wt=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "${AGENTS_NAMES[0]}")
+  first_wt=$(cd "$first_wt" && pwd)
+
+  tmux new-session -d -s "$AGENTS_SESSION" -c "$first_wt"
+  tmux rename-window -t "$AGENTS_SESSION:0" "${AGENTS_NAMES[0]}"
+
+  # Create panes for remaining agents
+  for ((i=1; i<count; i++)); do
+    local wt_path
+    wt_path=$(get_worktree_path "$project_root" "$AGENTS_WORKTREE_BASE" "$AGENTS_SESSION" "${AGENTS_NAMES[$i]}")
+    wt_path=$(cd "$wt_path" && pwd)
+    tmux split-window -t "$AGENTS_SESSION:0" -c "$wt_path"
+  done
+
+  # Add main integration pane if configured
+  if [[ "$AGENTS_MAIN_PANE" == "true" ]]; then
+    local abs_root
+    abs_root=$(cd "$project_root" && pwd)
+    tmux split-window -t "$AGENTS_SESSION:0" -c "$abs_root"
+  fi
+
+  # Apply tiled layout
+  tmux select-layout -t "$AGENTS_SESSION:0" tiled
+
+  # Send claude commands to agent panes
+  echo "Launching agents..."
+  for ((i=0; i<count; i++)); do
+    local task="${AGENTS_TASKS[$i]}"
+    local name="${AGENTS_NAMES[$i]}"
+    echo "  $name: claude \"$task\""
+    if [[ -n "$task" ]]; then
+      tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude \"$task\"" Enter
+    else
+      tmux send-keys -t "$AGENTS_SESSION:0.$i" "claude" Enter
+    fi
+  done
+
+  # Label the main pane
+  if [[ "$AGENTS_MAIN_PANE" == "true" ]]; then
+    local main_pane_idx=$count
+    tmux send-keys -t "$AGENTS_SESSION:0.$main_pane_idx" "# Main integration pane — project root" Enter
+  fi
+
+  echo ""
+
+  # Select first pane
+  tmux select-pane -t "$AGENTS_SESSION:0.0"
+
+  # Attach or launch in terminal
+  echo "Attaching to session '$AGENTS_SESSION'..."
+  case "$TERMINAL" in
+    alacritty) launch_alacritty "$AGENTS_SESSION" "$project_root" "tmux attach-session -t '$AGENTS_SESSION'" ;;
+    kitty)     launch_kitty "$AGENTS_SESSION" "$project_root" "tmux attach-session -t '$AGENTS_SESSION'" ;;
+    wezterm)   launch_wezterm "$AGENTS_SESSION" "$project_root" "tmux attach-session -t '$AGENTS_SESSION'" ;;
+    iterm)     launch_iterm "$AGENTS_SESSION" "$project_root" "tmux attach-session -t '$AGENTS_SESSION'" ;;
+    *)
+      echo "Error: Unsupported terminal '$TERMINAL'"
+      exit 1
+      ;;
+  esac
+}
+
+agents_status() {
+  local project="${1:-}"
+  local config_file
+
+  config_file=$(resolve_agents_config "$project") || exit 1
+  parse_agents_config "$config_file" || exit 1
+
+  # Check if session exists
+  if ! tmux has-session -t "$AGENTS_SESSION" 2>/dev/null; then
+    echo "Session '$AGENTS_SESSION' is not running."
+    return 1
+  fi
+
+  local count=${#AGENTS_NAMES[@]}
+  echo "Session: $AGENTS_SESSION"
+  echo ""
+  printf "  %-16s %-24s %s\n" "AGENT" "BRANCH" "STATUS"
+  printf "  %-16s %-24s %s\n" "-----" "------" "------"
+
+  for ((i=0; i<count; i++)); do
+    local name="${AGENTS_NAMES[$i]}"
+    local branch="${AGENTS_BRANCHES[$i]}"
+    local status="unknown"
+
+    # Check if pane exists and capture last line
+    if tmux list-panes -t "$AGENTS_SESSION:0" -F '#{pane_index}' 2>/dev/null | grep -q "^${i}$"; then
+      local pane_pid
+      pane_pid=$(tmux list-panes -t "$AGENTS_SESSION:0.$i" -F '#{pane_pid}' 2>/dev/null)
+      if [[ -n "$pane_pid" ]]; then
+        # Check if claude is running in this pane
+        if ps -o comm= -g "$pane_pid" 2>/dev/null | grep -q "claude"; then
+          status="running"
+        else
+          status="idle"
+        fi
+      fi
+    else
+      status="no pane"
+    fi
+
+    printf "  %-16s %-24s %s\n" "$name" "$branch" "$status"
+  done
+
+  if [[ "$AGENTS_MAIN_PANE" == "true" ]]; then
+    echo ""
+    echo "  Main integration pane: active"
+  fi
+}
+
+agents_cleanup() {
+  local project="${1:-}"
+  local config_file
+
+  config_file=$(resolve_agents_config "$project") || exit 1
+  parse_agents_config "$config_file" || exit 1
+
+  local project_root
+  project_root=$(resolve_project_root "$config_file" "$project")
+
+  echo "Cleaning up agents for session: $AGENTS_SESSION"
+  echo ""
+
+  # Kill tmux session
+  if tmux has-session -t "$AGENTS_SESSION" 2>/dev/null; then
+    echo "Killing tmux session: $AGENTS_SESSION"
+    tmux kill-session -t "$AGENTS_SESSION"
+  else
+    echo "Session '$AGENTS_SESSION' not running (skipping)"
+  fi
+
+  echo ""
+
+  # Remove worktrees
+  echo "Removing worktrees..."
+  remove_worktrees "$project_root"
+
+  echo ""
+  echo "Cleanup complete."
+}
+
+handle_agents_command() {
+  AGENTS_CONFIG_FILE=""
+
+  if [[ $# -eq 0 ]]; then
+    agents_usage
+    return 0
+  fi
+
+  local action="$1"
+  shift
+
+  # Parse agents subcommand options
+  local project=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --config)
+        [[ -z "${2:-}" ]] && { echo "Error: --config requires a file path"; return 1; }
+        AGENTS_CONFIG_FILE="$2"
+        shift 2
+        ;;
+      -t|--terminal)
+        [[ -z "${2:-}" ]] && { echo "Error: -t requires terminal name"; return 1; }
+        TERMINAL="$2"
+        shift 2
+        ;;
+      -h|--help)
+        agents_usage
+        return 0
+        ;;
+      -*)
+        echo "Error: Unknown option '$1'"
+        agents_usage
+        return 1
+        ;;
+      *)
+        project="$1"
+        shift
+        ;;
+    esac
+  done
+
+  case "$action" in
+    start)   agents_start "$project" ;;
+    status)  agents_status "$project" ;;
+    cleanup) agents_cleanup "$project" ;;
+    help)    agents_usage ;;
+    *)
+      echo "Error: Unknown agents action '$action'"
+      echo "Run '$(basename "$0") agents help' for usage"
+      return 1
+      ;;
+  esac
+}
+
+# ------------------------------------------------------------------------------
 # FUNCTIONS
 # ------------------------------------------------------------------------------
 
@@ -127,6 +672,7 @@ dmux v$VERSION - Launch development environments with tmux + Claude
 
 USAGE:
   $(basename "$0") -p project1,project2    Launch projects
+  $(basename "$0") agents <action>         Multi-agent orchestration
   $(basename "$0") -l                      List configured projects
   $(basename "$0") -a NAME PATH            Add a project
   $(basename "$0") -r NAME                 Remove a project
@@ -143,6 +689,13 @@ OPTIONS:
   -h, --help             Show this help
   -v, --version          Show version
 
+AGENTS (multi-agent orchestration):
+  $(basename "$0") agents start [project]         Read .dmux-agents.yml, create worktrees, launch agents
+  $(basename "$0") agents start --config <file>   Use a custom config file
+  $(basename "$0") agents status [project]        Show agent pane statuses
+  $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
+  $(basename "$0") agents help                    Show agents help
+
 EXAMPLES:
   # Launch two projects, each in their own terminal window
   $(basename "$0") -p myapp,backend
@@ -156,11 +709,16 @@ EXAMPLES:
   # Use a different terminal
   $(basename "$0") -p myapp -t kitty
 
+  # Start multi-agent session from .dmux-agents.yml
+  $(basename "$0") agents start
+
 CONFIG:
   Projects are stored in: $PROJECTS_FILE
 
   Format (one per line):
     project_name=\$HOME/path/to/project
+
+  Agent config (.dmux-agents.yml) — see 'dmux agents help'
 
 EOF
 }
@@ -377,6 +935,11 @@ if [[ $# -eq 0 ]]; then
   usage
   exit 0
 fi
+
+# Route subcommands before flag parsing
+case "${1:-}" in
+  agents) shift; handle_agents_command "$@"; exit $? ;;
+esac
 
 while [[ $# -gt 0 ]]; do
   case $1 in

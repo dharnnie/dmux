@@ -181,7 +181,8 @@ This will:
 | `dmux agents start --config path.yml` | Use a custom config file |
 | `dmux agents start -y` | Skip the pre-launch confirmation prompt |
 | `dmux agents status` | Show agent pane statuses (running/idle/waiting/done) |
-| `dmux agents cleanup` | Remove worktrees, signal dir, and kill the session |
+| `dmux agents changelog` | Generate a combined changelog from all agent work |
+| `dmux agents cleanup` | Remove worktrees, signal dir, and kill the session (writes `AGENTS_CHANGELOG.md`) |
 | `dmux agents init` | Interactively generate a `.dmux-agents.yml` |
 | `dmux agents help` | Show agents help |
 
@@ -289,6 +290,24 @@ Add `.dmux/` to your `.gitignore`:
 
 `agents cleanup` removes the `.dmux/` directory automatically.
 
+### Agent Changelogs
+
+When each agent finishes successfully, a per-agent changelog is automatically generated in `.dmux/changelogs/<agent>.md`. The changelog includes:
+
+- **Agent summary** — read from `AGENT_SUMMARY.md` if the agent wrote one (build agents are prompted to create this)
+- **Commits** — `git log` of commits on the agent's branch since the base branch
+- **Changed files** — `git diff --stat` against the base branch
+
+You can regenerate and view all changelogs at any time:
+
+```bash
+dmux agents changelog
+```
+
+This prints a combined changelog to stdout with all agent summaries, commits, and file changes.
+
+When you run `agents cleanup`, the combined changelog is automatically written to `AGENTS_CHANGELOG.md` in the project root before worktrees and the `.dmux/` directory are removed.
+
 ### Example: Building an API with 3 Agents
 
 This walks through the full lifecycle of using `dmux agents` to parallelize feature work on a project.
@@ -395,6 +414,8 @@ Output:
 ```
 Cleaning up agents for session: my-api-agents
 
+Wrote AGENTS_CHANGELOG.md
+
 Killing tmux session: my-api-agents
 
 Removing worktrees...
@@ -405,7 +426,7 @@ Removing worktrees...
 Cleanup complete.
 ```
 
-This kills the tmux session and removes all worktree directories. The branches remain in your git history.
+This generates `AGENTS_CHANGELOG.md` in the project root, kills the tmux session, and removes all worktree directories. The branches and changelog remain in your git history.
 
 ### How claude-cortex Fits In
 

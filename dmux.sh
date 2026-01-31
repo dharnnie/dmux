@@ -478,6 +478,88 @@ cleanup_signal_dir() {
 }
 
 # ------------------------------------------------------------------------------
+# CHANGELOG GENERATION
+# ------------------------------------------------------------------------------
+
+generate_agent_changelog() {
+  local agent_name="$1"
+  local branch="$2"
+  local project_root="$3"
+
+  local base_branch="main"
+  if [[ -f "$project_root/.dmux/base_branch" ]]; then
+    base_branch=$(cat "$project_root/.dmux/base_branch")
+  fi
+
+  mkdir -p "$project_root/.dmux/changelogs"
+
+  local changelog_file="$project_root/.dmux/changelogs/${agent_name}.md"
+
+  local commits
+  commits=$(git -C "$project_root" log "${base_branch}..${branch}" --oneline --no-decorate 2>/dev/null || echo "(no commits)")
+
+  local diff_stat
+  diff_stat=$(git -C "$project_root" diff --stat "${base_branch}..${branch}" 2>/dev/null || echo "(no changes)")
+
+  local agent_summary=""
+  local summary_content
+  if summary_content=$(git -C "$project_root" show "${branch}:AGENT_SUMMARY.md" 2>/dev/null); then
+    agent_summary="$summary_content"
+  fi
+
+  {
+    echo "## ${agent_name}"
+    echo "Branch: \`${branch}\`"
+    echo ""
+    if [[ -n "$agent_summary" ]]; then
+      echo "### Summary"
+      echo "$agent_summary"
+      echo ""
+    fi
+    echo "### Commits"
+    echo '```'
+    echo "$commits"
+    echo '```'
+    echo ""
+    echo "### Changed Files"
+    echo '```'
+    echo "$diff_stat"
+    echo '```'
+  } > "$changelog_file"
+}
+
+generate_combined_changelog() {
+  local project_root="$1"
+  local session_name="${2:-unknown}"
+
+  local base_branch="main"
+  if [[ -f "$project_root/.dmux/base_branch" ]]; then
+    base_branch=$(cat "$project_root/.dmux/base_branch")
+  fi
+
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+  local combined=""
+  combined+="# Agents Changelog"$'\n'
+  combined+="Session: ${session_name}"$'\n'
+  combined+="Generated: ${timestamp}"$'\n'
+  combined+="Base branch: ${base_branch}"$'\n'
+
+  if [[ -d "$project_root/.dmux/changelogs" ]]; then
+    for cl_file in "$project_root/.dmux/changelogs"/*.md; do
+      [[ -f "$cl_file" ]] || continue
+      combined+=$'\n'"---"$'\n\n'
+      combined+=$(cat "$cl_file")$'\n'
+    done
+  fi
+
+  combined+=$'\n'"---"$'\n'
+
+  echo "$combined"
+}
+
+# ------------------------------------------------------------------------------
 # AGENTS COMMANDS
 # ------------------------------------------------------------------------------
 
@@ -490,6 +572,7 @@ USAGE:
   $(basename "$0") agents start --config <file>   Use a custom config file
   $(basename "$0") agents start -y                Skip confirmation prompt
   $(basename "$0") agents status [project]        Show agent pane statuses
+  $(basename "$0") agents changelog [project]    Generate changelog from agent work
   $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
   $(basename "$0") agents init                    Interactively generate .dmux-agents.yml
 
@@ -631,6 +714,7 @@ build_agent_prompt() {
     prompt+=" You may read but not modify: ${context_fmt}."
   fi
 
+  prompt+=" Before committing, write a brief AGENT_SUMMARY.md in the root of your working directory summarizing what you built and any important decisions made."
   prompt+=" When you are done, commit all your changes with a descriptive commit message."
 
   echo "$prompt"
@@ -726,6 +810,10 @@ agents_start() {
   local signal_dir
   signal_dir=$(setup_signal_dir "$abs_root")
   echo "Signal directory: $signal_dir"
+
+  # Save base branch for changelog generation
+  git -C "$project_root" rev-parse --abbrev-ref HEAD > "$abs_root/.dmux/base_branch"
+  echo "Base branch: $(cat "$abs_root/.dmux/base_branch")"
   echo ""
 
   # Kill existing session
@@ -776,10 +864,15 @@ agents_start() {
   # Apply tiled layout
   tmux select-layout -t "$AGENTS_SESSION:0" tiled
 
+  # Resolve dmux script path for auto-changelog
+  local dmux_bin
+  dmux_bin=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+
   # Send claude commands to agent panes
   echo "Launching agents..."
   for ((i=0; i<count; i++)); do
     local name="${AGENTS_NAMES[$i]}"
+    local branch="${AGENTS_BRANCHES[$i]}"
     local deps="${AGENTS_DEPENDS_ON[$i]}"
     local full_prompt
     full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches")
@@ -813,9 +906,9 @@ agents_start() {
       done
       wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="${claude_cmd} \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'"
+        wait_cmd+="${claude_cmd} \"${escaped_prompt}\"; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
       else
-        wait_cmd+="${claude_cmd}; echo \$? > '${signal_dir}/${name}.done'"
+        wait_cmd+="${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
       fi
       wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
@@ -823,9 +916,9 @@ agents_start() {
       # Independent agent: launch immediately with marker file on exit
       echo "  $name: ${claude_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} \"${escaped_prompt}\"; echo \$? > '${signal_dir}/${name}.done'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} \"${escaped_prompt}\"; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
       else
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; echo \$? > '${signal_dir}/${name}.done'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
       fi
     fi
   done
@@ -944,6 +1037,31 @@ agents_cleanup() {
   project_root=$(resolve_project_root "$config_file" "$project")
 
   echo "Cleaning up agents for session: $AGENTS_SESSION"
+  echo ""
+
+  # Generate any missing per-agent changelogs
+  local count=${#AGENTS_NAMES[@]}
+  for ((i=0; i<count; i++)); do
+    if [[ "${AGENTS_ROLES[$i]}" == "review" ]]; then
+      continue
+    fi
+    local name="${AGENTS_NAMES[$i]}"
+    local branch="${AGENTS_BRANCHES[$i]}"
+    local changelog_file="$project_root/.dmux/changelogs/${name}.md"
+    if [[ ! -f "$changelog_file" ]]; then
+      generate_agent_changelog "$name" "$branch" "$project_root"
+      echo "Generated changelog for agent: $name"
+    fi
+  done
+
+  # Combine changelogs and write to project root
+  local combined
+  combined=$(generate_combined_changelog "$project_root" "$AGENTS_SESSION")
+  echo "$combined" > "$project_root/AGENTS_CHANGELOG.md"
+  echo ""
+  echo "$combined"
+  echo ""
+  echo "Wrote AGENTS_CHANGELOG.md"
   echo ""
 
   # Kill tmux session
@@ -1082,6 +1200,33 @@ EOF
   echo "Wrote $output_file"
 }
 
+agents_changelog() {
+  local project="${1:-}"
+  local config_file
+
+  config_file=$(resolve_agents_config "$project") || exit 1
+  parse_agents_config "$config_file" || exit 1
+
+  local project_root
+  project_root=$(resolve_project_root "$config_file" "$project")
+
+  local count=${#AGENTS_NAMES[@]}
+
+  # Regenerate per-agent changelogs for all build agents
+  for ((i=0; i<count; i++)); do
+    if [[ "${AGENTS_ROLES[$i]}" == "review" ]]; then
+      continue
+    fi
+    local name="${AGENTS_NAMES[$i]}"
+    local branch="${AGENTS_BRANCHES[$i]}"
+    generate_agent_changelog "$name" "$branch" "$project_root"
+    echo "Generated changelog for agent: $name" >&2
+  done
+
+  # Print combined changelog to stdout
+  generate_combined_changelog "$project_root" "$AGENTS_SESSION"
+}
+
 handle_agents_command() {
   AGENTS_CONFIG_FILE=""
 
@@ -1131,9 +1276,10 @@ handle_agents_command() {
   case "$action" in
     start)   agents_start "$project" "$skip_confirm" ;;
     status)  agents_status "$project" ;;
-    cleanup) agents_cleanup "$project" ;;
-    init)    agents_init ;;
-    help)    agents_usage ;;
+    cleanup)   agents_cleanup "$project" ;;
+    changelog) agents_changelog "$project" ;;
+    init)      agents_init ;;
+    help)      agents_usage ;;
     *)
       echo "Error: Unknown agents action '$action'"
       echo "Run '$(basename "$0") agents help' for usage"
@@ -1174,6 +1320,7 @@ AGENTS (multi-agent orchestration):
   $(basename "$0") agents start --config <file>   Use a custom config file
   $(basename "$0") agents start -y                Skip confirmation prompt
   $(basename "$0") agents status [project]        Show agent pane statuses
+  $(basename "$0") agents changelog [project]    Generate changelog from agent work
   $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
   $(basename "$0") agents init                    Interactively generate .dmux-agents.yml
   $(basename "$0") agents help                    Show agents help
@@ -1421,6 +1568,11 @@ fi
 # Route subcommands before flag parsing
 case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
+  _agent-changelog)
+    # Internal subcommand: generate changelog for a single agent
+    generate_agent_changelog "$2" "$3" "$4"
+    exit $?
+    ;;
 esac
 
 while [[ $# -gt 0 ]]; do

@@ -205,6 +205,8 @@ Worktree paths follow the pattern: `{worktree_base}/{session}-{agent_name}`
 
 ### Review Agent
 
+> **Note:** Review agents are supported but not recommended. A review agent uses the same model as the build agents, adding cost and latency with limited independent value. Prefer reviewing branches yourself in the main pane or running automated checks (linting, tests) as part of the build agent command.
+
 A `review` agent runs at the project root (no worktree or branch) and is designed to review the work of other agents. Use `depends_on` to make it wait until build agents finish:
 
 ```yaml

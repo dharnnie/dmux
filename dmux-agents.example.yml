@@ -24,6 +24,11 @@ agents:
   - name: admin
     branch: feature/admin
     task: "create admin dashboard CRUD endpoints"
+  # Review agents (role: review) are supported but not recommended.
+  # A review agent uses the same model as the build agents, so it adds
+  # cost and latency with limited independent value. Prefer reviewing
+  # branches yourself in the main pane or running automated checks
+  # (linting, tests) as part of the build agent command instead.
   - name: reviewer
     role: review
     task: "review changes on feature/auth, feature/catalog, and feature/admin for bugs, security issues, and style"

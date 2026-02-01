@@ -143,6 +143,7 @@ parse_agents_config() {
   local current_depends_on=""
   local in_depends_on_list=false
   local current_auto_accept=""
+  local last_scalar_field=""
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Skip comments and empty lines
@@ -175,6 +176,7 @@ parse_agents_config() {
       in_scope_list=false
       in_context_list=false
       in_depends_on_list=false
+      last_scalar_field=""
       in_agents_list=true
       continue
     fi
@@ -222,36 +224,60 @@ parse_agents_config() {
         current_branch=$(strip_yaml_comment "${BASH_REMATCH[1]}")
         current_branch="${current_branch#"${current_branch%%[![:space:]]*}"}"
         current_branch="${current_branch%"${current_branch##*[![:space:]]}"}"
+        last_scalar_field="branch"
         continue
       fi
       if [[ "$line" =~ ^[[:space:]]+task:[[:space:]]*(.*) ]]; then
         current_task=$(strip_yaml_comment "${BASH_REMATCH[1]}")
         current_task="${current_task#"${current_task%%[![:space:]]*}"}"
         current_task="${current_task%"${current_task##*[![:space:]]}"}"
+        last_scalar_field="task"
         continue
       fi
       if [[ "$line" =~ ^[[:space:]]+role:[[:space:]]*(.*) ]]; then
         current_role=$(strip_yaml_comment "${BASH_REMATCH[1]}")
         current_role="${current_role#"${current_role%%[![:space:]]*}"}"
         current_role="${current_role%"${current_role##*[![:space:]]}"}"
+        last_scalar_field="role"
         continue
       fi
       if [[ "$line" =~ ^[[:space:]]+auto_accept:[[:space:]]*(.*) ]]; then
         current_auto_accept=$(strip_yaml_comment "${BASH_REMATCH[1]}")
         current_auto_accept="${current_auto_accept#"${current_auto_accept%%[![:space:]]*}"}"
         current_auto_accept="${current_auto_accept%"${current_auto_accept##*[![:space:]]}"}"
+        last_scalar_field="auto_accept"
         continue
       fi
       if [[ "$line" =~ ^[[:space:]]+scope:[[:space:]]*$ ]]; then
         in_scope_list=true
+        last_scalar_field=""
         continue
       fi
       if [[ "$line" =~ ^[[:space:]]+context:[[:space:]]*$ ]]; then
         in_context_list=true
+        last_scalar_field=""
         continue
       fi
       if [[ "$line" =~ ^[[:space:]]+depends_on:[[:space:]]*$ ]]; then
         in_depends_on_list=true
+        last_scalar_field=""
+        continue
+      fi
+
+      # Multi-line scalar continuation: indented line that didn't match any key
+      if [[ -n "$last_scalar_field" && "$line" =~ ^[[:space:]]+(.*) ]]; then
+        local cont
+        cont="${BASH_REMATCH[1]}"
+        cont="${cont#"${cont%%[![:space:]]*}"}"
+        cont="${cont%"${cont##*[![:space:]]}"}"
+        if [[ -n "$cont" ]]; then
+          case "$last_scalar_field" in
+            task) current_task+=" $cont" ;;
+            branch) current_branch+=" $cont" ;;
+            role) current_role+=" $cont" ;;
+            auto_accept) current_auto_accept+=" $cont" ;;
+          esac
+        fi
         continue
       fi
     fi

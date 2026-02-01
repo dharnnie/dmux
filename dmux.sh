@@ -877,8 +877,9 @@ agents_start() {
     local full_prompt
     full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches")
 
-    # Escape double quotes in prompt for shell embedding
-    local escaped_prompt="${full_prompt//\"/\\\"}"
+    # Escape single quotes for safe shell embedding (single-quoted strings
+    # prevent $, `, \, and ! expansion that double quotes would allow)
+    local escaped_prompt="${full_prompt//\'/\'\\\'\'}"
 
     # Build claude command with optional --dangerously-skip-permissions
     local claude_cmd="claude"
@@ -906,7 +907,7 @@ agents_start() {
       done
       wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="${claude_cmd} \"${escaped_prompt}\"; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
+        wait_cmd+="${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
       else
         wait_cmd+="${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
       fi
@@ -916,7 +917,7 @@ agents_start() {
       # Independent agent: launch immediately with marker file on exit
       echo "  $name: ${claude_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} \"${escaped_prompt}\"; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
       else
         tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
       fi

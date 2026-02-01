@@ -7,7 +7,7 @@
 # A CLI tool to quickly spin up development environments with multiple
 # terminal panes, optionally pre-launching Claude Code in each.
 #
-# https://github.com/anthropics/dmux
+# https://github.com/dharnnie/dmux
 #
 # ==============================================================================
 
@@ -1320,7 +1320,7 @@ handle_agents_command() {
 # ------------------------------------------------------------------------------
 
 dmux_update() {
-  local update_url="https://github.com/anthropics/dmux/raw/main/dmux.sh"
+  local update_url="https://github.com/dharnnie/dmux/raw/main/dmux.sh"
   local self
   self="$(realpath "$0")"
 

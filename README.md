@@ -27,12 +27,12 @@ This tool does that in one command.
 
 **Quick install:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anthropics/dmux/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/install.sh | bash
 ```
 
 **Or clone:**
 ```bash
-git clone https://github.com/anthropics/dmux.git
+git clone https://github.com/dharnnie/dmux.git
 cd dmux
 ./install.sh
 ```

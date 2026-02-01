@@ -93,7 +93,11 @@ install_script() {
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   local is_update=false
-  [[ -f "$INSTALL_DIR/dmux" ]] && is_update=true
+  local old_version=""
+  if [[ -f "$INSTALL_DIR/dmux" ]]; then
+    is_update=true
+    old_version=$(grep -m1 '^VERSION=' "$INSTALL_DIR/dmux" 2>/dev/null | cut -d'"' -f2 || true)
+  fi
 
   if [[ -f "$script_dir/dmux.sh" ]]; then
     # Local install from cloned repo
@@ -105,10 +109,21 @@ install_script() {
   fi
 
   chmod +x "$INSTALL_DIR/dmux"
+
+  local new_version
+  new_version=$(grep -m1 '^VERSION=' "$INSTALL_DIR/dmux" 2>/dev/null | cut -d'"' -f2 || true)
+
   if $is_update; then
-    success "Updated: $INSTALL_DIR/dmux"
+    if [[ -n "$old_version" && -n "$new_version" && "$old_version" != "$new_version" ]]; then
+      success "Updated dmux: v${old_version} -> v${new_version}"
+      echo "    Run 'dmux -h' to see what's new."
+    elif [[ -n "$new_version" && "$old_version" == "$new_version" ]]; then
+      success "dmux is already up to date (v${new_version})"
+    else
+      success "Updated: $INSTALL_DIR/dmux"
+    fi
   else
-    success "Installed: $INSTALL_DIR/dmux"
+    success "Installed: $INSTALL_DIR/dmux (v${new_version:-unknown})"
   fi
 }
 

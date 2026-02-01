@@ -1320,7 +1320,7 @@ handle_agents_command() {
 # ------------------------------------------------------------------------------
 
 dmux_update() {
-  local update_url="https://github.com/anthropics/dmux/raw/main/dmux.sh"
+  local update_url="https://github.com/dharnnie/dmux/raw/main/dmux.sh"
   local self
   self="$(realpath "$0")"
 

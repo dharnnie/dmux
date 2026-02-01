@@ -1319,6 +1319,40 @@ handle_agents_command() {
 # FUNCTIONS
 # ------------------------------------------------------------------------------
 
+dmux_update() {
+  local update_url="https://github.com/anthropics/dmux/raw/main/dmux.sh"
+  local self
+  self="$(realpath "$0")"
+
+  echo "Checking for updates..."
+
+  local tmpfile
+  tmpfile=$(mktemp)
+  trap 'rm -f "$tmpfile"' EXIT
+
+  if ! curl -fsSL "$update_url" -o "$tmpfile" 2>/dev/null; then
+    echo "Error: Failed to download update from $update_url"
+    return 1
+  fi
+
+  local new_version
+  new_version=$(grep -m1 '^VERSION=' "$tmpfile" | cut -d'"' -f2)
+
+  if [[ -z "$new_version" ]]; then
+    echo "Error: Could not determine version from downloaded script"
+    return 1
+  fi
+
+  if [[ "$VERSION" == "$new_version" ]]; then
+    echo "dmux is already up to date (v${VERSION})"
+    return 0
+  fi
+
+  cp "$tmpfile" "$self"
+  chmod +x "$self"
+  echo "Updated dmux: v${VERSION} -> v${new_version}"
+}
+
 usage() {
   cat << EOF
 dmux v$VERSION - Launch development environments with tmux + Claude
@@ -1326,6 +1360,7 @@ dmux v$VERSION - Launch development environments with tmux + Claude
 USAGE:
   $(basename "$0") -p project1,project2    Launch projects
   $(basename "$0") agents <action>         Multi-agent orchestration
+  $(basename "$0") update                  Self-update to latest version
   $(basename "$0") -l                      List configured projects
   $(basename "$0") -a NAME PATH            Add a project
   $(basename "$0") -r NAME                 Remove a project
@@ -1595,6 +1630,7 @@ fi
 # Route subcommands before flag parsing
 case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
+  update) dmux_update; exit $? ;;
   _agent-changelog)
     # Internal subcommand: generate changelog for a single agent
     generate_agent_changelog "$2" "$3" "$4"

@@ -82,6 +82,7 @@ get_project_names() {
 AGENTS_SESSION=""
 AGENTS_WORKTREE_BASE=".."
 AGENTS_MAIN_PANE="true"
+AGENTS_NOTIFICATIONS="true"
 AGENTS_NAMES=()
 AGENTS_BRANCHES=()
 AGENTS_TASKS=()
@@ -122,6 +123,7 @@ parse_agents_config() {
   AGENTS_SESSION=""
   AGENTS_WORKTREE_BASE=".."
   AGENTS_MAIN_PANE="true"
+  AGENTS_NOTIFICATIONS="true"
   AGENTS_NAMES=()
   AGENTS_BRANCHES=()
   AGENTS_TASKS=()
@@ -301,6 +303,13 @@ parse_agents_config() {
       AGENTS_MAIN_PANE=$(strip_yaml_comment "${BASH_REMATCH[1]}")
       AGENTS_MAIN_PANE="${AGENTS_MAIN_PANE#"${AGENTS_MAIN_PANE%%[![:space:]]*}"}"
       AGENTS_MAIN_PANE="${AGENTS_MAIN_PANE%"${AGENTS_MAIN_PANE##*[![:space:]]}"}"
+      in_agents_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^notifications:[[:space:]]*(.*) ]]; then
+      AGENTS_NOTIFICATIONS=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      AGENTS_NOTIFICATIONS="${AGENTS_NOTIFICATIONS#"${AGENTS_NOTIFICATIONS%%[![:space:]]*}"}"
+      AGENTS_NOTIFICATIONS="${AGENTS_NOTIFICATIONS%"${AGENTS_NOTIFICATIONS##*[![:space:]]}"}"
       in_agents_list=false
       continue
     fi
@@ -500,6 +509,18 @@ cleanup_signal_dir() {
   if [[ -d "$dmux_dir" ]]; then
     rm -rf "$dmux_dir"
     echo "  Removed signal directory: $dmux_dir"
+  fi
+}
+
+# Send a desktop notification (macOS via osascript, Linux via notify-send).
+# Silently no-ops if neither tool is available.
+send_notification() {
+  local title="$1"
+  local message="$2"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    osascript -e "display notification \"$message\" with title \"$title\"" 2>/dev/null || true
+  elif command -v notify-send &>/dev/null; then
+    notify-send "$title" "$message" 2>/dev/null || true
   fi
 }
 
@@ -894,6 +915,19 @@ agents_start() {
   local dmux_bin
   dmux_bin=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 
+  # Build space-separated list of all agent names (for summary notification)
+  local all_agent_names=""
+  for ((i=0; i<count; i++)); do
+    all_agent_names+="${AGENTS_NAMES[$i]} "
+  done
+  all_agent_names="${all_agent_names% }"
+
+  # Build reusable notification suffix (empty string when notifications disabled)
+  local summary_cmd=""
+  if [[ "$AGENTS_NOTIFICATIONS" == "true" ]]; then
+    summary_cmd="; '${dmux_bin}' _notify-summary '${signal_dir}' ${all_agent_names}"
+  fi
+
   # Send claude commands to agent panes
   echo "Launching agents..."
   for ((i=0; i<count; i++)); do
@@ -911,6 +945,14 @@ agents_start() {
     local claude_cmd="claude"
     if [[ "${AGENTS_AUTO_ACCEPT[$i]}" == "true" ]]; then
       claude_cmd="claude --dangerously-skip-permissions"
+    fi
+
+    # Build per-agent notification commands (empty when notifications disabled)
+    local notify_ok="" notify_fail="" notify_blocked=""
+    if [[ "$AGENTS_NOTIFICATIONS" == "true" ]]; then
+      notify_ok="; '${dmux_bin}' _notify 'dmux: ${name} finished' 'Agent completed successfully'"
+      notify_fail="; '${dmux_bin}' _notify 'dmux: ${name} failed' 'Agent exited with code '\$_exit"
+      notify_blocked="; '${dmux_bin}' _notify 'dmux: ${name} blocked' 'Skipped — dependency failed'"
     fi
 
     if [[ -n "$deps" ]]; then
@@ -931,11 +973,11 @@ agents_start() {
       for dep in "${dep_arr[@]}"; do
         wait_cmd+="dep_code=\$(cat '${signal_dir}/${dep}.done'); if [ \"\$dep_code\" != '0' ]; then echo 'Dependency ${dep} failed (exit '\$dep_code')'; any_failed=true; fi; "
       done
-      wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'; else "
+      wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'${notify_blocked}${summary_cmd}; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
+        wait_cmd+="${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
       else
-        wait_cmd+="${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'"
+        wait_cmd+="${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
       fi
       wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
@@ -943,9 +985,9 @@ agents_start() {
       # Independent agent: launch immediately with marker file on exit
       echo "  $name: ${claude_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
       else
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
       fi
     fi
   done
@@ -1635,6 +1677,29 @@ case "${1:-}" in
     # Internal subcommand: generate changelog for a single agent
     generate_agent_changelog "$2" "$3" "$4"
     exit $?
+    ;;
+  _notify)
+    # Internal subcommand: send a desktop notification
+    send_notification "$2" "$3"
+    exit 0
+    ;;
+  _notify-summary)
+    # Internal subcommand: if all agents are done, send a summary notification
+    # Usage: _notify-summary <signal_dir> <agent1> <agent2> ...
+    _sig_dir="$2"; shift 2
+    _all_done=true; _ok=0; _fail=0
+    for _ag in "$@"; do
+      if [[ ! -f "$_sig_dir/$_ag.done" ]]; then
+        _all_done=false
+        break
+      fi
+      _code=$(cat "$_sig_dir/$_ag.done")
+      if [[ "$_code" == "0" ]]; then ((_ok++)); else ((_fail++)); fi
+    done
+    if $_all_done; then
+      send_notification "dmux: All agents finished" "$_ok succeeded, $_fail failed"
+    fi
+    exit 0
     ;;
 esac
 

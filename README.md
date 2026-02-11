@@ -540,9 +540,12 @@ tmux attach -t dmux-myapp
 ## Uninstall
 
 ```bash
-rm ~/.local/bin/dmux
-rm -rf ~/.config/dmux
-rm -rf ~/.local/share/dmux    # removes UI if installed
+curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/uninstall.sh | bash
+```
+
+Or if you cloned the repo:
+```bash
+./uninstall.sh
 ```
 
 ## License

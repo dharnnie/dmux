@@ -18,6 +18,8 @@ set -euo pipefail
 REPO_URL="https://github.com/dharnnie/dmux"
 INSTALL_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dmux"
+UI_DIR="${HOME}/.local/share/dmux/ui"
+INSTALL_UI=false
 
 # Colors
 RED='\033[0;31m'
@@ -149,6 +151,57 @@ EOF
   fi
 }
 
+install_ui() {
+  if [[ "$INSTALL_UI" != true ]]; then
+    return
+  fi
+
+  info "Installing dmux UI..."
+
+  if ! command -v node >/dev/null 2>&1; then
+    error "Node.js is required for dmux UI but not installed.
+    Install it first: https://nodejs.org"
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    error "npm is required for dmux UI but not installed."
+  fi
+
+  mkdir -p "$UI_DIR"
+
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+  if [[ -d "$script_dir/dmux-ui" ]]; then
+    # Local install from cloned repo
+    cp -r "$script_dir/dmux-ui/package.json" "$UI_DIR/"
+    cp -r "$script_dir/dmux-ui/vite.config.js" "$UI_DIR/"
+    cp -r "$script_dir/dmux-ui/index.html" "$UI_DIR/"
+    cp -r "$script_dir/dmux-ui/server" "$UI_DIR/"
+    cp -r "$script_dir/dmux-ui/src" "$UI_DIR/"
+  else
+    info "Downloading UI from $REPO_URL..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    git clone --depth 1 "$REPO_URL" "$tmpdir" 2>/dev/null
+    cp -r "$tmpdir/dmux-ui/"* "$UI_DIR/"
+    rm -rf "$tmpdir"
+  fi
+
+  info "Installing UI dependencies..."
+  (cd "$UI_DIR" && npm install --production=false 2>/dev/null) || {
+    error "Failed to install UI dependencies"
+  }
+
+  info "Building UI..."
+  (cd "$UI_DIR" && npx vite build 2>/dev/null) || {
+    warn "UI build failed, dev mode will still work"
+  }
+
+  success "Installed dmux UI to $UI_DIR"
+  echo "    Run 'dmux ui' to start the web interface"
+}
+
 check_path() {
   if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     warn "$INSTALL_DIR is not in your PATH"
@@ -174,6 +227,13 @@ check_path() {
 # ------------------------------------------------------------------------------
 
 main() {
+  # Parse flags
+  for arg in "$@"; do
+    case "$arg" in
+      --with-ui) INSTALL_UI=true ;;
+    esac
+  done
+
   echo ""
   echo "  dmux installer"
   echo "  =============="
@@ -182,6 +242,7 @@ main() {
   check_dependencies
   install_script
   setup_config
+  install_ui
   check_path
 
   echo ""

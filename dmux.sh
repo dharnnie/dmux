@@ -1824,6 +1824,7 @@ dmux v$VERSION - Launch development environments with tmux + Claude
 USAGE:
   $(basename "$0") -p project1,project2    Launch projects
   $(basename "$0") agents <action>         Multi-agent orchestration
+  $(basename "$0") ui                      Open the local web UI
   $(basename "$0") update                  Self-update to latest version
   $(basename "$0") -l                      List configured projects
   $(basename "$0") -a NAME PATH            Add a project
@@ -2095,6 +2096,27 @@ fi
 case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
   update) dmux_update; exit $? ;;
+  ui)
+    # Launch the dmux web UI
+    UI_DIR="${HOME}/.local/share/dmux/ui"
+    # Also check if running from the repo (dev mode)
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if [[ -d "$SCRIPT_DIR/dmux-ui/node_modules" ]]; then
+      UI_DIR="$SCRIPT_DIR/dmux-ui"
+    fi
+    if [[ ! -d "$UI_DIR" ]]; then
+      echo "Error: dmux UI is not installed."
+      echo "  Install with: dmux install --with-ui"
+      echo "  Or from repo: cd dmux-ui && npm install"
+      exit 1
+    fi
+    UI_PORT="${DMUX_UI_PORT:-3100}"
+    echo "Starting dmux UI at http://localhost:${UI_PORT}"
+    # Open browser after a short delay
+    (sleep 1 && open "http://localhost:${UI_PORT}" 2>/dev/null || xdg-open "http://localhost:${UI_PORT}" 2>/dev/null || true) &
+    cd "$UI_DIR" && PORT="$UI_PORT" node server/index.js
+    exit $?
+    ;;
   _agent-changelog)
     # Internal subcommand: generate changelog for a single agent
     generate_agent_changelog "$2" "$3" "$4"

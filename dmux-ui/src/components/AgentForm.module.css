@@ -1,0 +1,147 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fieldFull {
+  composes: field;
+  grid-column: 1 / -1;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.input {
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 14px;
+  transition: border-color 0.15s;
+}
+
+.input:focus {
+  border-color: var(--accent-cyan);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.textarea {
+  composes: input;
+  min-height: 60px;
+  resize: vertical;
+  font-family: var(--font-sans);
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-pink);
+}
+
+.agentCard {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.agentTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-pink);
+}
+
+.removeBtn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  transition: all 0.15s;
+}
+
+.removeBtn:hover {
+  border-color: #ff4444;
+  color: #ff4444;
+}
+
+.addBtn {
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent-cyan);
+  border: 1px dashed var(--border-subtle);
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.addBtn:hover {
+  border-color: var(--accent-cyan);
+  background: rgba(0, 153, 255, 0.05);
+}
+
+.checkboxGroup {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.select {
+  composes: input;
+  cursor: pointer;
+  appearance: auto;
+}

@@ -91,6 +91,256 @@ AGENTS_CONTEXTS=()   # comma-separated read-only paths, or empty
 AGENTS_ROLES=()      # "build" (default) or "review"
 AGENTS_DEPENDS_ON=() # comma-separated agent names, or empty
 AGENTS_AUTO_ACCEPT=() # "true" or "false"
+AGENTS_ON_COMPLETE=()  # comma-separated: "test,push,pr"
+AGENTS_ON_COMPLETE_GLOBAL="" # top-level on_complete default
+AGENTS_NAMESPACE_BRANCHES="false"
+
+# Slugify a string: lowercase, replace non-alnum with hyphens, collapse, trim
+slugify() {
+  local input="$1"
+  local slug="${input,,}"
+  slug="${slug//[^a-z0-9]/-}"
+  while [[ "$slug" == *--* ]]; do slug="${slug//--/-}"; done
+  slug="${slug#-}"
+  slug="${slug%-}"
+  echo "$slug"
+}
+
+# Get git username as a slug, fallback to whoami
+get_git_username_slug() {
+  local username
+  username=$(git config user.name 2>/dev/null || true)
+  if [[ -z "$username" ]]; then
+    username=$(whoami)
+  fi
+  slugify "$username"
+}
+
+# Apply branch namespacing to all AGENTS_BRANCHES entries
+apply_branch_namespacing() {
+  if [[ "$AGENTS_NAMESPACE_BRANCHES" != "true" ]]; then
+    return
+  fi
+
+  local prefix
+  prefix=$(get_git_username_slug)
+  local count=${#AGENTS_BRANCHES[@]}
+
+  for ((i=0; i<count; i++)); do
+    local branch="${AGENTS_BRANCHES[$i]}"
+    [[ -z "$branch" ]] && continue
+    if [[ "$branch" != "${prefix}/"* ]]; then
+      AGENTS_BRANCHES[$i]="${prefix}/${branch}"
+    fi
+  done
+}
+
+# Check that a command exists, with a helpful error if not
+require_command() {
+  local cmd="$1"
+  local purpose="$2"
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "Error: '$cmd' is required for $purpose but not installed."
+    return 1
+  fi
+}
+
+# Detect issue platform from git remote URL
+detect_issue_platform() {
+  local remote_url
+  remote_url=$(git config --get remote.origin.url 2>/dev/null || echo "")
+
+  if [[ "$remote_url" == *"github.com"* ]]; then
+    echo "github"
+  elif [[ "$remote_url" == *"gitlab.com"* || "$remote_url" == *"gitlab"* ]]; then
+    echo "gitlab"
+  else
+    echo "unknown"
+  fi
+}
+
+# Fetch a GitHub issue. Prints: line 1 = title, line 2+ = body
+fetch_issue_github() {
+  local issue_number="$1"
+  require_command "gh" "--from-issue with GitHub" || return 1
+  require_command "jq" "--from-issue JSON parsing" || return 1
+
+  local json
+  json=$(gh issue view "$issue_number" --json title,body 2>&1) || {
+    echo "Error: Failed to fetch GitHub issue #$issue_number"
+    echo "  $json"
+    return 1
+  }
+
+  local title body
+  title=$(echo "$json" | jq -r '.title')
+  body=$(echo "$json" | jq -r '.body // ""')
+
+  printf '%s\n' "$title"
+  printf '%s\n' "$body"
+}
+
+# Fetch a GitLab issue. Prints: line 1 = title, line 2+ = body
+fetch_issue_gitlab() {
+  local issue_number="$1"
+  require_command "glab" "--from-issue with GitLab" || return 1
+  require_command "jq" "--from-issue JSON parsing" || return 1
+
+  local json
+  json=$(glab issue view "$issue_number" --output json 2>&1) || {
+    echo "Error: Failed to fetch GitLab issue #$issue_number"
+    echo "  $json"
+    return 1
+  }
+
+  local title body
+  title=$(echo "$json" | jq -r '.title')
+  body=$(echo "$json" | jq -r '.description // ""')
+
+  printf '%s\n' "$title"
+  printf '%s\n' "$body"
+}
+
+# Fetch a Jira issue. Prints: line 1 = title, line 2+ = body
+fetch_issue_jira() {
+  local issue_key="$1"
+  require_command "jq" "--from-issue JSON parsing" || return 1
+
+  if [[ -z "${JIRA_BASE_URL:-}" ]]; then
+    echo "Error: JIRA_BASE_URL environment variable is required for Jira issues"
+    echo "  Example: export JIRA_BASE_URL=https://mycompany.atlassian.net"
+    return 1
+  fi
+  if [[ -z "${JIRA_USER:-}" ]]; then
+    echo "Error: JIRA_USER environment variable is required for Jira issues"
+    return 1
+  fi
+  if [[ -z "${JIRA_TOKEN:-}" ]]; then
+    echo "Error: JIRA_TOKEN environment variable is required for Jira issues"
+    echo "  Create one at: https://id.atlassian.net/manage-profile/security/api-tokens"
+    return 1
+  fi
+
+  local url="${JIRA_BASE_URL}/rest/api/3/issue/${issue_key}"
+  local json
+  json=$(curl -s -u "$JIRA_USER:$JIRA_TOKEN" "$url") || {
+    echo "Error: Failed to fetch Jira issue $issue_key"
+    return 1
+  }
+
+  if echo "$json" | jq -e '.errorMessages' &>/dev/null; then
+    echo "Error: Jira API error for $issue_key:"
+    echo "$json" | jq -r '.errorMessages[]'
+    return 1
+  fi
+
+  local title body
+  title=$(echo "$json" | jq -r '.fields.summary')
+  body=$(echo "$json" | jq -r '[.. | .text? // empty] | join(" ")')
+
+  printf '%s\n' "$title"
+  printf '%s\n' "$body"
+}
+
+# Dispatch to the right platform fetcher
+fetch_issue() {
+  local platform="$1"
+  local issue_id="$2"
+
+  case "$platform" in
+    github)  fetch_issue_github "$issue_id" ;;
+    gitlab)  fetch_issue_gitlab "$issue_id" ;;
+    jira)    fetch_issue_jira "$issue_id" ;;
+    *)
+      echo "Error: Unsupported platform '$platform'"
+      echo "  Use --platform github|gitlab|jira"
+      return 1
+      ;;
+  esac
+}
+
+# Generate .dmux-agents.yml from comma-separated issue IDs
+generate_yaml_from_issues() {
+  local platform="$1"
+  local issues_csv="$2"
+  local output_file=".dmux-agents.yml"
+
+  local session_name
+  session_name=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+  session_name="$(slugify "$session_name")-agents"
+
+  IFS=',' read -ra issue_ids <<< "$issues_csv"
+
+  local agents_yaml=""
+  local errors=0
+  local success=0
+
+  for issue_id in "${issue_ids[@]}"; do
+    # Trim whitespace
+    issue_id="${issue_id#"${issue_id%%[![:space:]]*}"}"
+    issue_id="${issue_id%"${issue_id##*[![:space:]]}"}"
+
+    echo "Fetching issue $issue_id from $platform..."
+
+    local output
+    if output=$(fetch_issue "$platform" "$issue_id"); then
+      local title body slug agent_name branch
+      title=$(echo "$output" | head -1)
+      body=$(echo "$output" | tail -n +2)
+
+      slug=$(slugify "$title")
+      slug="${slug:0:50}"
+      slug="${slug%-}"
+
+      agent_name="$slug"
+      branch="feat/${issue_id}-${slug}"
+
+      # Escape double quotes and collapse newlines for YAML
+      body="${body//\"/\\\"}"
+      body="${body//$'\n'/ }"
+
+      agents_yaml+="  - name: ${agent_name}"$'\n'
+      agents_yaml+="    branch: ${branch}"$'\n'
+      agents_yaml+="    task: \"${body}\""$'\n'
+      success=$((success + 1))
+      echo "  -> agent: $agent_name (branch: $branch)"
+    else
+      echo "$output"
+      errors=$((errors + 1))
+    fi
+  done
+
+  if [[ $success -eq 0 ]]; then
+    echo "Error: Failed to fetch all issues"
+    return 1
+  fi
+
+  if [[ -f "$output_file" ]]; then
+    echo ""
+    echo "Warning: $output_file already exists."
+    read -p "Overwrite? [y/N]: " -n 1 -r
+    echo ""
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+      echo "Aborted."
+      return 1
+    fi
+  fi
+
+  cat > "$output_file" << EOF
+session: ${session_name}
+worktree_base: ..
+main_pane: true
+
+agents:
+${agents_yaml}
+EOF
+
+  echo ""
+  echo "Wrote $output_file with $success agent(s) from $platform issues"
+  if [[ $errors -gt 0 ]]; then
+    echo "Warning: $errors issue(s) failed to fetch"
+  fi
+}
 
 # Strip inline YAML comments (# ...) from a value, preserving # inside quotes
 strip_yaml_comment() {
@@ -132,6 +382,9 @@ parse_agents_config() {
   AGENTS_ROLES=()
   AGENTS_DEPENDS_ON=()
   AGENTS_AUTO_ACCEPT=()
+  AGENTS_ON_COMPLETE=()
+  AGENTS_ON_COMPLETE_GLOBAL=""
+  AGENTS_NAMESPACE_BRANCHES="false"
 
   local in_agents_list=false
   local current_name=""
@@ -145,6 +398,9 @@ parse_agents_config() {
   local current_depends_on=""
   local in_depends_on_list=false
   local current_auto_accept=""
+  local current_on_complete=""
+  local in_on_complete_list=false
+  local in_top_on_complete_list=false
   local last_scalar_field=""
 
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -164,6 +420,7 @@ parse_agents_config() {
         AGENTS_CONTEXTS+=("$current_context")
         AGENTS_DEPENDS_ON+=("$current_depends_on")
         AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
+        AGENTS_ON_COMPLETE+=("$current_on_complete")
       fi
       current_name=$(strip_yaml_comment "${BASH_REMATCH[1]}")
       current_name="${current_name#"${current_name%%[![:space:]]*}"}"
@@ -175,9 +432,11 @@ parse_agents_config() {
       current_context=""
       current_depends_on=""
       current_auto_accept=""
+      current_on_complete=""
       in_scope_list=false
       in_context_list=false
       in_depends_on_list=false
+      in_on_complete_list=false
       last_scalar_field=""
       in_agents_list=true
       continue
@@ -215,12 +474,21 @@ parse_agents_config() {
           fi
           continue
         fi
+        if $in_on_complete_list; then
+          if [[ -n "$current_on_complete" ]]; then
+            current_on_complete+=",${item}"
+          else
+            current_on_complete="$item"
+          fi
+          continue
+        fi
       fi
 
       # Any non-list-item line resets sub-list flags
       in_scope_list=false
       in_context_list=false
       in_depends_on_list=false
+      in_on_complete_list=false
 
       if [[ "$line" =~ ^[[:space:]]+branch:[[:space:]]*(.*) ]]; then
         current_branch=$(strip_yaml_comment "${BASH_REMATCH[1]}")
@@ -262,6 +530,11 @@ parse_agents_config() {
       fi
       if [[ "$line" =~ ^[[:space:]]+depends_on:[[:space:]]*$ ]]; then
         in_depends_on_list=true
+        last_scalar_field=""
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]+on_complete:[[:space:]]*$ ]]; then
+        in_on_complete_list=true
         last_scalar_field=""
         continue
       fi
@@ -313,8 +586,50 @@ parse_agents_config() {
       in_agents_list=false
       continue
     fi
+    if [[ "$line" =~ ^namespace_branches:[[:space:]]*(.*) ]]; then
+      AGENTS_NAMESPACE_BRANCHES=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      AGENTS_NAMESPACE_BRANCHES="${AGENTS_NAMESPACE_BRANCHES#"${AGENTS_NAMESPACE_BRANCHES%%[![:space:]]*}"}"
+      AGENTS_NAMESPACE_BRANCHES="${AGENTS_NAMESPACE_BRANCHES%"${AGENTS_NAMESPACE_BRANCHES##*[![:space:]]}"}"
+      in_agents_list=false
+      in_top_on_complete_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^on_complete:[[:space:]]*$ ]]; then
+      in_top_on_complete_list=true
+      in_agents_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^on_complete:[[:space:]]+(.*) ]]; then
+      # Inline format: on_complete: test, push
+      local val
+      val=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      val="${val#"${val%%[![:space:]]*}"}"
+      val="${val%"${val##*[![:space:]]}"}"
+      AGENTS_ON_COMPLETE_GLOBAL="${val//[[:space:]]/}"
+      in_agents_list=false
+      in_top_on_complete_list=false
+      continue
+    fi
+    # Top-level on_complete list items
+    if $in_top_on_complete_list; then
+      if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+(.*) ]]; then
+        local item
+        item=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        if [[ -n "$AGENTS_ON_COMPLETE_GLOBAL" ]]; then
+          AGENTS_ON_COMPLETE_GLOBAL+=",${item}"
+        else
+          AGENTS_ON_COMPLETE_GLOBAL="$item"
+        fi
+        continue
+      else
+        in_top_on_complete_list=false
+      fi
+    fi
     if [[ "$line" =~ ^agents:[[:space:]]*$ ]]; then
       in_agents_list=false
+      in_top_on_complete_list=false
       continue
     fi
   done < "$config_file"
@@ -329,6 +644,7 @@ parse_agents_config() {
     AGENTS_CONTEXTS+=("$current_context")
     AGENTS_DEPENDS_ON+=("$current_depends_on")
     AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
+    AGENTS_ON_COMPLETE+=("$current_on_complete")
   fi
 
   # Validate
@@ -615,13 +931,15 @@ agents_usage() {
 dmux agents - Multi-agent orchestration with git worktrees + Claude
 
 USAGE:
-  $(basename "$0") agents start [project]         Start agents from config
-  $(basename "$0") agents start --config <file>   Use a custom config file
-  $(basename "$0") agents start -y                Skip confirmation prompt
-  $(basename "$0") agents status [project]        Show agent pane statuses
-  $(basename "$0") agents changelog [project]    Generate changelog from agent work
-  $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
-  $(basename "$0") agents init                    Interactively generate .dmux-agents.yml
+  $(basename "$0") agents start [project]                Start agents from config
+  $(basename "$0") agents start --from-issue 42,51       Generate config from issues and launch
+  $(basename "$0") agents start --config <file>          Use a custom config file
+  $(basename "$0") agents start -y                       Skip confirmation prompt
+  $(basename "$0") agents status [project]               Show agent pane statuses
+  $(basename "$0") agents changelog [project]            Generate changelog from agent work
+  $(basename "$0") agents cleanup [project]              Remove worktrees and kill session
+  $(basename "$0") agents init                           Interactively generate .dmux-agents.yml
+  $(basename "$0") agents init --from-issue 42,51        Generate config from issues (no launch)
 
 CONFIG FILE:
   By default, reads .dmux-agents.yml from the current directory or the
@@ -630,6 +948,11 @@ CONFIG FILE:
   Format:
     session: my-api-agents
     worktree_base: ..              # relative to project root
+    namespace_branches: false      # prefix branches with git username
+    on_complete:                   # post-task instructions for all agents
+      - test                       #   run tests and fix failures
+      - push                       #   push branch to remote
+      - pr                         #   create a draft pull request
     agents:
       - name: auth
         branch: feature/auth
@@ -643,6 +966,10 @@ CONFIG FILE:
         branch: feature/catalog
         task: "build product listing API"
         auto_accept: true          # skip permission prompts
+        on_complete:               # per-agent override
+          - test
+          - push
+          - pr
       - name: reviewer
         role: review               # review agent (no worktree)
         task: "review changes for bugs and security issues"
@@ -654,6 +981,8 @@ CONFIG FILE:
 OPTIONS:
   -y, --yes              Skip confirmation prompt before launching
   --config <file>        Use a custom config file
+  --from-issue <ids>     Create agents from issue numbers (comma-separated)
+  --platform <name>      Issue platform: github, gitlab, or jira (auto-detected from git remote)
   -t, --terminal <term>  Terminal to use
 
 EXAMPLES:
@@ -662,6 +991,12 @@ EXAMPLES:
 
   # Start without confirmation prompt
   $(basename "$0") agents start -y
+
+  # Create agents from GitHub/GitLab issues and launch
+  $(basename "$0") agents start --from-issue 42,51,78
+
+  # Create agents from Jira issues
+  $(basename "$0") agents init --from-issue PROJ-123,PROJ-456 --platform jira
 
   # Start agents for a registered project
   $(basename "$0") agents start myapp
@@ -734,12 +1069,46 @@ resolve_project_root() {
   echo "$config_dir"
 }
 
+# Map on_complete shorthands to ordered prompt instructions
+get_on_complete_instructions() {
+  local shorthands="$1"
+  [[ -z "$shorthands" ]] && return
+
+  local has_test=false has_push=false has_pr=false
+  IFS=',' read -ra items <<< "$shorthands"
+  for item in "${items[@]}"; do
+    item="${item#"${item%%[![:space:]]*}"}"
+    item="${item%"${item##*[![:space:]]}"}"
+    case "$item" in
+      test) has_test=true ;;
+      push) has_push=true ;;
+      pr)   has_pr=true ;;
+      *)    echo "Warning: Unknown on_complete shorthand '$item' (ignored)" >&2 ;;
+    esac
+  done
+
+  local instructions=""
+  if $has_test; then
+    instructions+=" After completing your task, run the project's test suite and fix any failures."
+  fi
+  instructions+=" When you are done, commit all your changes with a descriptive commit message."
+  if $has_push; then
+    instructions+=" After committing, push your branch to the remote."
+  fi
+  if $has_pr; then
+    instructions+=" After pushing, create a draft pull request with a descriptive title and summary."
+  fi
+
+  echo "$instructions"
+}
+
 build_agent_prompt() {
   local task="$1"
   local scope="$2"
   local context="$3"
   local role="$4"
   local all_branches="$5"
+  local on_complete="${6:-}"
 
   local prompt="$task"
 
@@ -762,7 +1131,14 @@ build_agent_prompt() {
   fi
 
   prompt+=" Before committing, write a brief AGENT_SUMMARY.md in the root of your working directory summarizing what you built and any important decisions made."
-  prompt+=" When you are done, commit all your changes with a descriptive commit message."
+
+  local on_complete_text
+  on_complete_text=$(get_on_complete_instructions "$on_complete")
+  if [[ -n "$on_complete_text" ]]; then
+    prompt+="$on_complete_text"
+  else
+    prompt+=" When you are done, commit all your changes with a descriptive commit message."
+  fi
 
   echo "$prompt"
 }
@@ -830,6 +1206,7 @@ agents_start() {
 
   config_file=$(resolve_agents_config "$project") || exit 1
   parse_agents_config "$config_file" || exit 1
+  apply_branch_namespacing
 
   local project_root
   project_root=$(resolve_project_root "$config_file" "$project")
@@ -934,8 +1311,14 @@ agents_start() {
     local name="${AGENTS_NAMES[$i]}"
     local branch="${AGENTS_BRANCHES[$i]}"
     local deps="${AGENTS_DEPENDS_ON[$i]}"
+    # Resolve on_complete: per-agent overrides top-level
+    local agent_on_complete="${AGENTS_ON_COMPLETE[$i]}"
+    if [[ -z "$agent_on_complete" ]]; then
+      agent_on_complete="$AGENTS_ON_COMPLETE_GLOBAL"
+    fi
+
     local full_prompt
-    full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches")
+    full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches" "$agent_on_complete")
 
     # Escape single quotes for safe shell embedding (single-quoted strings
     # prevent $, `, \, and ! expansion that double quotes would allow)
@@ -1023,6 +1406,7 @@ agents_status() {
 
   config_file=$(resolve_agents_config "$project") || exit 1
   parse_agents_config "$config_file" || exit 1
+  apply_branch_namespacing
 
   local project_root
   project_root=$(resolve_project_root "$config_file" "$project")
@@ -1101,6 +1485,7 @@ agents_cleanup() {
 
   config_file=$(resolve_agents_config "$project") || exit 1
   parse_agents_config "$config_file" || exit 1
+  apply_branch_namespacing
 
   local project_root
   project_root=$(resolve_project_root "$config_file" "$project")
@@ -1275,6 +1660,7 @@ agents_changelog() {
 
   config_file=$(resolve_agents_config "$project") || exit 1
   parse_agents_config "$config_file" || exit 1
+  apply_branch_namespacing
 
   local project_root
   project_root=$(resolve_project_root "$config_file" "$project")
@@ -1310,11 +1696,23 @@ handle_agents_command() {
   # Parse agents subcommand options
   local project=""
   local skip_confirm="false"
+  local from_issue=""
+  local platform_override=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config)
         [[ -z "${2:-}" ]] && { echo "Error: --config requires a file path"; return 1; }
         AGENTS_CONFIG_FILE="$2"
+        shift 2
+        ;;
+      --from-issue)
+        [[ -z "${2:-}" ]] && { echo "Error: --from-issue requires issue numbers (e.g., 42,51 or PROJ-123)"; return 1; }
+        from_issue="$2"
+        shift 2
+        ;;
+      --platform)
+        [[ -z "${2:-}" ]] && { echo "Error: --platform requires github|gitlab|jira"; return 1; }
+        platform_override="$2"
         shift 2
         ;;
       -t|--terminal)
@@ -1343,11 +1741,35 @@ handle_agents_command() {
   done
 
   case "$action" in
-    start)   agents_start "$project" "$skip_confirm" ;;
-    status)  agents_status "$project" ;;
+    start)
+      if [[ -n "$from_issue" ]]; then
+        local platform="${platform_override:-$(detect_issue_platform)}"
+        if [[ "$platform" == "unknown" ]]; then
+          echo "Error: Could not detect issue platform from git remote."
+          echo "  Use --platform github|gitlab|jira to specify."
+          return 1
+        fi
+        generate_yaml_from_issues "$platform" "$from_issue" || return 1
+        echo ""
+      fi
+      agents_start "$project" "$skip_confirm"
+      ;;
+    status)    agents_status "$project" ;;
     cleanup)   agents_cleanup "$project" ;;
     changelog) agents_changelog "$project" ;;
-    init)      agents_init ;;
+    init)
+      if [[ -n "$from_issue" ]]; then
+        local platform="${platform_override:-$(detect_issue_platform)}"
+        if [[ "$platform" == "unknown" ]]; then
+          echo "Error: Could not detect issue platform from git remote."
+          echo "  Use --platform github|gitlab|jira to specify."
+          return 1
+        fi
+        generate_yaml_from_issues "$platform" "$from_issue"
+      else
+        agents_init
+      fi
+      ;;
     help)      agents_usage ;;
     *)
       echo "Error: Unknown agents action '$action'"

@@ -5,6 +5,15 @@ session: my-api-agents
 worktree_base: ..              # relative to project root (default: "..")
 main_pane: true                # include a bottom pane for integration work
 
+# namespace_branches: true     # prefix branches with git username (e.g., daniel/feature/auth)
+
+# on_complete: post-task instructions appended to every agent's prompt
+# Supported shorthands: test, push, pr
+# on_complete:
+#   - test                     # run the project's test suite and fix failures
+#   - push                     # push the branch to the remote
+#   - pr                       # create a draft pull request
+
 agents:
   - name: auth
     branch: feature/auth
@@ -18,6 +27,11 @@ agents:
     # context:
     #   - src/types/
     #   - src/config/
+    # on_complete: per-agent override (replaces top-level on_complete)
+    # on_complete:
+    #   - test
+    #   - push
+    #   - pr
   - name: catalog
     branch: feature/catalog
     task: "build product listing API with search and filters"

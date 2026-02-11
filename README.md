@@ -11,6 +11,9 @@ dmux -p myapp -n 3 -c 2
 
 # Launch multiple Claude agents with isolated worktrees
 dmux agents start
+
+# Open the local web UI
+dmux ui
 ```
 
 ## Why?
@@ -101,6 +104,7 @@ dmux -p myapp -n 2 -c 2    # 2 panes, claude in both
 | `-h, --help` | Show help |
 | `-v, --version` | Show version |
 | `agents <action>` | Multi-agent orchestration (see below) |
+| `ui` | Launch the local web UI |
 
 ## Configuration
 
@@ -437,6 +441,63 @@ curl -fsSL https://raw.githubusercontent.com/dharnnie/claude-cortex/main/install
 ```
 
 > **Note:** claude-cortex no longer uses git submodules. If you previously added it as a submodule, see the [cortex README](https://github.com/dharnnie/claude-cortex) for the new install-script approach.
+
+## Web UI
+
+dmux includes an optional local web interface for managing projects and agents visually.
+
+### Install
+
+```bash
+# From a cloned repo
+cd dmux-ui && npm install
+
+# Or via the installer
+./install.sh --with-ui
+```
+
+### Launch
+
+```bash
+# From the repo (dev mode)
+dmux ui
+
+# Or with a custom port
+DMUX_UI_PORT=8080 dmux ui
+```
+
+This starts a local server and opens `http://localhost:3100` in your browser.
+
+### What You Can Do
+
+- **Projects Grid** — See all registered projects at a glance with status badges (agents config present, session running)
+- **Add/Remove Projects** — Manage your project list from the browser
+- **Quick Launch** — Pick pane count and Claude pane count, hit Launch
+- **Agent Config Editor** — Visual form to build `.dmux-agents.yml` with live YAML preview that updates as you type
+- **Start/Cleanup Agents** — One-click agent orchestration
+- **Live Status** — Agent status table that auto-refreshes every 5 seconds
+
+### Stack
+
+- **Server:** Node + Express — thin API layer that shells out to `dmux` CLI and reads config files directly
+- **Frontend:** React 19 + Vite + React Router with CSS modules
+- **No database** — stateless, reads `~/.config/dmux/projects` and per-project `.dmux-agents.yml`
+
+### Development
+
+```bash
+cd dmux-ui
+npm install
+npm run dev    # Express on :3100, Vite on :3101 (with hot reload)
+```
+
+For production:
+
+```bash
+cd dmux-ui
+npm run build
+npm start      # Serves built assets on :3100
+```
 
 ## How it works
 

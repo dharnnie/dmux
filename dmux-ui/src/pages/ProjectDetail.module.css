@@ -1,0 +1,190 @@
+.page {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 20px;
+  transition: color 0.15s;
+}
+
+.backLink:hover {
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.header {
+  margin-bottom: 32px;
+}
+
+.name {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-bottom: 4px;
+}
+
+.path {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 24px;
+}
+
+.cardTitle {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.launchRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.launchField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.launchLabel {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.launchInput {
+  width: 100px;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: center;
+  transition: border-color 0.15s;
+}
+
+.launchInput:focus {
+  border-color: var(--accent-cyan);
+}
+
+.launchBtn {
+  padding: 10px 24px;
+  background: var(--accent-cyan);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  transition: opacity 0.15s;
+}
+
+.launchBtn:hover {
+  opacity: 0.85;
+}
+
+.agentActions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  transition: opacity 0.15s;
+}
+
+.btnPink {
+  composes: btn;
+  background: var(--accent-pink);
+  color: #fff;
+}
+
+.btnPink:hover {
+  opacity: 0.85;
+}
+
+.btnCyan {
+  composes: btn;
+  background: var(--accent-cyan);
+  color: #fff;
+}
+
+.btnCyan:hover {
+  opacity: 0.85;
+}
+
+.btnOutline {
+  composes: btn;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.btnOutline:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.btnDanger {
+  composes: btn;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.btnDanger:hover {
+  border-color: #ff4444;
+  color: #ff4444;
+}
+
+.message {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.noConfig {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.deleteSection {
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.deleteHint {
+  color: var(--text-muted);
+  font-size: 13px;
+}

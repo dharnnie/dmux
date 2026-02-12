@@ -1,5 +1,9 @@
 # dmux
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: macOS | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-brightgreen.svg)]()
+[![Shell: Bash](https://img.shields.io/badge/Shell-Bash-yellow.svg)]()
+
 Launch multi-pane tmux dev environments in one command — or orchestrate multiple Claude Code agents across git worktrees.
 
 ```bash
@@ -16,6 +20,18 @@ dmux agents start
 dmux ui
 ```
 
+---
+
+## Why dmux
+
+- **One command, full environment** — stop manually opening terminals, splitting panes, and cd-ing into projects
+- **Multi-agent orchestration** — run parallel Claude Code agents in isolated worktrees, each with its own branch and task
+- **Terminal agnostic** — Alacritty, Kitty, WezTerm, iTerm2
+- **Zero dependencies beyond tmux** — pure bash, no runtimes, no daemons
+- **Optional web UI** — local React dashboard for visual management
+
+---
+
 ## Install
 
 **Quick install:**
@@ -29,10 +45,7 @@ git clone https://github.com/dharnnie/dmux.git
 cd dmux && ./install.sh
 ```
 
-### Requirements
-
-- **tmux** - terminal multiplexer
-- **One of:** Alacritty, Kitty, WezTerm, or iTerm2
+**Requirements:** tmux and one of Alacritty, Kitty, WezTerm, or iTerm2.
 
 ```bash
 # macOS
@@ -45,7 +58,9 @@ sudo apt install tmux alacritty
 sudo pacman -S tmux alacritty
 ```
 
-## Usage
+---
+
+## Quick Start
 
 ### Add your projects
 
@@ -66,7 +81,11 @@ dmux -p myapp -n 3             # 3 panes
 dmux -p myapp -n 3 -c 2       # 3 panes, Claude in first 2
 ```
 
-### Options
+---
+
+## CLI Reference
+
+### Launch
 
 | Flag | Description |
 |------|-------------|
@@ -74,21 +93,33 @@ dmux -p myapp -n 3 -c 2       # 3 panes, Claude in first 2
 | `-n, --panes` | Number of panes per window (default: 1) |
 | `-c, --claude` | Number of panes to run `claude` in (default: 0) |
 | `-t, --terminal` | Terminal to use: `alacritty`, `kitty`, `wezterm`, `iterm` |
-| `-l, --list` | List configured projects |
+
+### Project management
+
+| Flag | Description |
+|------|-------------|
 | `-a, --add` | Add a project: `-a name /path` |
 | `-r, --remove` | Remove a project: `-r name` |
-| `-h, --help` | Show help |
-| `-v, --version` | Show version |
+| `-l, --list` | List configured projects |
+
+### Other
+
+| Flag | Description |
+|------|-------------|
 | `agents <action>` | Multi-agent orchestration (see below) |
 | `ui` | Launch the local web UI |
+| `-h, --help` | Show help |
+| `-v, --version` | Show version |
 
-Set a default terminal with `export DMUX_TERMINAL=kitty` in your shell config.
+**Default terminal:** `export DMUX_TERMINAL=kitty` in your shell config.
 
-Projects are stored in `~/.config/dmux/projects` (`name=$HOME/path/to/project` format).
+**Project storage:** `~/.config/dmux/projects` (`name=$HOME/path/to/project` format).
+
+---
 
 ## Multi-Agent Orchestration
 
-The `agents` subcommand runs multiple Claude Code agents in parallel, each in its own git worktree with an assigned task.
+Building a feature often means touching multiple parts of the codebase at once. The `agents` subcommand runs multiple Claude Code agents in parallel, each in its own git worktree with an assigned task.
 
 ### Quick Start
 
@@ -138,7 +169,7 @@ Add `.dmux/` to your `.gitignore` — dmux uses `.dmux/signals/` to track agent 
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Agents Commands
+### Commands
 
 | Command | Description |
 |---------|-------------|
@@ -151,6 +182,8 @@ Add `.dmux/` to your `.gitignore` — dmux uses `.dmux/signals/` to track agent 
 | `dmux agents cleanup` | Remove worktrees, signal dir, and kill the session (writes `AGENTS_CHANGELOG.md`) |
 | `dmux agents init` | Interactively generate a `.dmux-agents.yml` |
 | `dmux agents help` | Show agents help |
+
+Worktree paths follow the pattern: `{worktree_base}/{session}-{agent_name}`
 
 ### Config Reference
 
@@ -167,8 +200,6 @@ Add `.dmux/` to your `.gitignore` — dmux uses `.dmux/signals/` to track agent 
 | `agents[].role` | no | `build` | Agent role: `build` (default) or `review` |
 | `agents[].depends_on` | no | — | List of agent names this agent waits for before launching |
 | `agents[].auto_accept` | no | `false` | When `true`, runs `claude --dangerously-skip-permissions` for fully autonomous operation |
-
-Worktree paths follow the pattern: `{worktree_base}/{session}-{agent_name}`
 
 ### Review Agent
 
@@ -198,6 +229,8 @@ agents:
       - auth
       - catalog
 ```
+
+---
 
 ## Web UI
 
@@ -243,6 +276,8 @@ This starts a local server on `http://localhost:3100` and opens it in your brows
 
 See [`dmux-ui/README.md`](dmux-ui/README.md) for development setup and architecture details.
 
+---
+
 ## Tips
 
 **Closing sessions:**
@@ -263,6 +298,8 @@ tmux attach -t dmux-myapp
 - `Ctrl-b` then `z` to zoom/unzoom a pane
 - `Ctrl-b` then `d` to detach (leave running)
 
+---
+
 ## Uninstall
 
 ```bash
@@ -274,6 +311,8 @@ Or if you cloned the repo:
 ./uninstall.sh
 ```
 
-## License
+---
 
-MIT
+<p align="center">
+  <strong>dmux</strong> is released under the <a href="LICENSE">MIT License</a>.
+</p>

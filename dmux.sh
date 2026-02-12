@@ -2114,7 +2114,7 @@ case "${1:-}" in
     echo "Starting dmux UI at http://localhost:${UI_PORT}"
     # Open browser after a short delay
     (sleep 1 && open "http://localhost:${UI_PORT}" 2>/dev/null || xdg-open "http://localhost:${UI_PORT}" 2>/dev/null || true) &
-    cd "$UI_DIR" && PORT="$UI_PORT" node server/index.js
+    cd "$UI_DIR" && NODE_ENV=production PORT="$UI_PORT" node server/index.js
     exit $?
     ;;
   _agent-changelog)

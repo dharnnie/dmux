@@ -94,6 +94,8 @@ AGENTS_AUTO_ACCEPT=() # "true" or "false"
 AGENTS_ON_COMPLETE=()  # comma-separated: "test,push,pr"
 AGENTS_ON_COMPLETE_GLOBAL="" # top-level on_complete default
 AGENTS_NAMESPACE_BRANCHES="false"
+AGENTS_PROVIDERS=()              # per-agent provider (claude, gemini, etc.)
+AGENTS_PROVIDER_DEFAULT="claude" # top-level default provider
 
 # Slugify a string: lowercase, replace non-alnum with hyphens, collapse, trim
 slugify() {
@@ -104,6 +106,32 @@ slugify() {
   slug="${slug#-}"
   slug="${slug%-}"
   echo "$slug"
+}
+
+# Provider registry: maps provider names to binaries, flags, and process names.
+# To add a new provider, add one case per function.
+provider_binary() {
+  case "$1" in
+    claude) echo "claude" ;;
+    gemini) echo "gemini" ;;
+    *) echo "Error: Unknown provider '$1'" >&2; return 1 ;;
+  esac
+}
+
+provider_auto_accept_flag() {
+  case "$1" in
+    claude) echo "--dangerously-skip-permissions" ;;
+    gemini) echo "--yolo" ;;
+    *) echo "Error: Unknown provider '$1'" >&2; return 1 ;;
+  esac
+}
+
+provider_process_name() {
+  case "$1" in
+    claude) echo "claude" ;;
+    gemini) echo "gemini" ;;
+    *) echo "Error: Unknown provider '$1'" >&2; return 1 ;;
+  esac
 }
 
 # Get git username as a slug, fallback to whoami
@@ -385,6 +413,8 @@ parse_agents_config() {
   AGENTS_ON_COMPLETE=()
   AGENTS_ON_COMPLETE_GLOBAL=""
   AGENTS_NAMESPACE_BRANCHES="false"
+  AGENTS_PROVIDERS=()
+  AGENTS_PROVIDER_DEFAULT="claude"
 
   local in_agents_list=false
   local current_name=""
@@ -398,6 +428,7 @@ parse_agents_config() {
   local current_depends_on=""
   local in_depends_on_list=false
   local current_auto_accept=""
+  local current_provider=""
   local current_on_complete=""
   local in_on_complete_list=false
   local in_top_on_complete_list=false
@@ -420,6 +451,7 @@ parse_agents_config() {
         AGENTS_CONTEXTS+=("$current_context")
         AGENTS_DEPENDS_ON+=("$current_depends_on")
         AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
+        AGENTS_PROVIDERS+=("$current_provider")
         AGENTS_ON_COMPLETE+=("$current_on_complete")
       fi
       current_name=$(strip_yaml_comment "${BASH_REMATCH[1]}")
@@ -432,6 +464,7 @@ parse_agents_config() {
       current_context=""
       current_depends_on=""
       current_auto_accept=""
+      current_provider=""
       current_on_complete=""
       in_scope_list=false
       in_context_list=false
@@ -518,6 +551,13 @@ parse_agents_config() {
         last_scalar_field="auto_accept"
         continue
       fi
+      if [[ "$line" =~ ^[[:space:]]+provider:[[:space:]]*(.*) ]]; then
+        current_provider=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+        current_provider="${current_provider#"${current_provider%%[![:space:]]*}"}"
+        current_provider="${current_provider%"${current_provider##*[![:space:]]}"}"
+        last_scalar_field="provider"
+        continue
+      fi
       if [[ "$line" =~ ^[[:space:]]+scope:[[:space:]]*$ ]]; then
         in_scope_list=true
         last_scalar_field=""
@@ -551,6 +591,7 @@ parse_agents_config() {
             branch) current_branch+=" $cont" ;;
             role) current_role+=" $cont" ;;
             auto_accept) current_auto_accept+=" $cont" ;;
+            provider) current_provider+=" $cont" ;;
           esac
         fi
         continue
@@ -590,6 +631,14 @@ parse_agents_config() {
       AGENTS_NAMESPACE_BRANCHES=$(strip_yaml_comment "${BASH_REMATCH[1]}")
       AGENTS_NAMESPACE_BRANCHES="${AGENTS_NAMESPACE_BRANCHES#"${AGENTS_NAMESPACE_BRANCHES%%[![:space:]]*}"}"
       AGENTS_NAMESPACE_BRANCHES="${AGENTS_NAMESPACE_BRANCHES%"${AGENTS_NAMESPACE_BRANCHES##*[![:space:]]}"}"
+      in_agents_list=false
+      in_top_on_complete_list=false
+      continue
+    fi
+    if [[ "$line" =~ ^provider:[[:space:]]*(.*) ]]; then
+      AGENTS_PROVIDER_DEFAULT=$(strip_yaml_comment "${BASH_REMATCH[1]}")
+      AGENTS_PROVIDER_DEFAULT="${AGENTS_PROVIDER_DEFAULT#"${AGENTS_PROVIDER_DEFAULT%%[![:space:]]*}"}"
+      AGENTS_PROVIDER_DEFAULT="${AGENTS_PROVIDER_DEFAULT%"${AGENTS_PROVIDER_DEFAULT##*[![:space:]]}"}"
       in_agents_list=false
       in_top_on_complete_list=false
       continue
@@ -644,6 +693,7 @@ parse_agents_config() {
     AGENTS_CONTEXTS+=("$current_context")
     AGENTS_DEPENDS_ON+=("$current_depends_on")
     AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
+    AGENTS_PROVIDERS+=("$current_provider")
     AGENTS_ON_COMPLETE+=("$current_on_complete")
   fi
 
@@ -677,6 +727,19 @@ parse_agents_config() {
         return 1
       fi
     done
+  done
+
+  # Validate provider values
+  # Resolve empty per-agent providers to the top-level default
+  for ((i=0; i<count; i++)); do
+    if [[ -z "${AGENTS_PROVIDERS[$i]}" ]]; then
+      AGENTS_PROVIDERS[$i]="$AGENTS_PROVIDER_DEFAULT"
+    fi
+    if ! provider_binary "${AGENTS_PROVIDERS[$i]}" >/dev/null 2>&1; then
+      echo "Error: Agent '${AGENTS_NAMES[$i]}' has unknown provider '${AGENTS_PROVIDERS[$i]}'"
+      echo "  Supported providers: claude, gemini"
+      return 1
+    fi
   done
 
   return 0
@@ -928,7 +991,7 @@ generate_combined_changelog() {
 
 agents_usage() {
   cat << EOF
-dmux agents - Multi-agent orchestration with git worktrees + Claude
+dmux agents - Multi-agent orchestration with git worktrees + AI coding agents
 
 USAGE:
   $(basename "$0") agents start [project]                Start agents from config
@@ -948,6 +1011,7 @@ CONFIG FILE:
   Format:
     session: my-api-agents
     worktree_base: ..              # relative to project root
+    provider: claude               # default provider (claude or gemini)
     namespace_branches: false      # prefix branches with git username
     on_complete:                   # post-task instructions for all agents
       - test                       #   run tests and fix failures
@@ -957,6 +1021,7 @@ CONFIG FILE:
       - name: auth
         branch: feature/auth
         task: "implement JWT authentication"
+        provider: gemini           # per-agent override
         scope:                     # optional: writable paths
           - src/auth/
           - src/middleware/auth.ts
@@ -1154,8 +1219,8 @@ print_launch_summary() {
   printf "  %-16s %s\n" "WORKTREE BASE" "$AGENTS_WORKTREE_BASE"
   printf "  %-16s %s\n" "MAIN PANE" "$AGENTS_MAIN_PANE"
   echo ""
-  printf "  %-16s %-24s %-8s %-6s %s\n" "AGENT" "BRANCH" "ROLE" "AUTO" "DEPENDS ON"
-  printf "  %-16s %-24s %-8s %-6s %s\n" "-----" "------" "----" "----" "----------"
+  printf "  %-16s %-24s %-8s %-8s %-6s %s\n" "AGENT" "BRANCH" "ROLE" "PROVIDER" "AUTO" "DEPENDS ON"
+  printf "  %-16s %-24s %-8s %-8s %-6s %s\n" "-----" "------" "----" "--------" "----" "----------"
 
   local worktree_count=0
   local review_count=0
@@ -1165,6 +1230,7 @@ print_launch_summary() {
     local role="${AGENTS_ROLES[$i]}"
     local deps="${AGENTS_DEPENDS_ON[$i]}"
     local auto="${AGENTS_AUTO_ACCEPT[$i]}"
+    local provider="${AGENTS_PROVIDERS[$i]}"
 
     if [[ "$role" == "review" ]]; then
       branch="—"
@@ -1178,7 +1244,7 @@ print_launch_summary() {
       dep_display="${deps//,/, }"
     fi
 
-    printf "  %-16s %-24s %-8s %-6s %s\n" "$name" "$branch" "$role" "$auto" "$dep_display"
+    printf "  %-16s %-24s %-8s %-8s %-6s %s\n" "$name" "$branch" "$role" "$provider" "$auto" "$dep_display"
   done
 
   echo ""
@@ -1324,10 +1390,12 @@ agents_start() {
     # prevent $, `, \, and ! expansion that double quotes would allow)
     local escaped_prompt="${full_prompt//\'/\'\\\'\'}"
 
-    # Build claude command with optional --dangerously-skip-permissions
-    local claude_cmd="claude"
+    # Build provider command with optional auto-accept flag
+    local agent_provider="${AGENTS_PROVIDERS[$i]}"
+    local agent_cmd
+    agent_cmd=$(provider_binary "$agent_provider")
     if [[ "${AGENTS_AUTO_ACCEPT[$i]}" == "true" ]]; then
-      claude_cmd="claude --dangerously-skip-permissions"
+      agent_cmd+=" $(provider_auto_accept_flag "$agent_provider")"
     fi
 
     # Build per-agent notification commands (empty when notifications disabled)
@@ -1341,7 +1409,7 @@ agents_start() {
     if [[ -n "$deps" ]]; then
       # Dependent agent: wait for marker files, then launch
       local dep_display="${deps//,/, }"
-      echo "  $name: waiting for $dep_display, then ${claude_cmd} \"$full_prompt\""
+      echo "  $name: waiting for $dep_display, then ${agent_cmd} \"$full_prompt\""
 
       IFS=',' read -ra dep_arr <<< "$deps"
       local wait_cmd="echo 'Waiting for agents: ${dep_display}...'; "
@@ -1358,19 +1426,19 @@ agents_start() {
       done
       wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'${notify_blocked}${summary_cmd}; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
+        wait_cmd+="${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
       else
-        wait_cmd+="${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
+        wait_cmd+="${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
       fi
       wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
     else
       # Independent agent: launch immediately with marker file on exit
-      echo "  $name: ${claude_cmd} \"$full_prompt\""
+      echo "  $name: ${agent_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
       else
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${claude_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
       fi
     fi
   done
@@ -1441,8 +1509,10 @@ agents_status() {
       local pane_pid
       pane_pid=$(tmux list-panes -t "$AGENTS_SESSION:0.$i" -F '#{pane_pid}' 2>/dev/null)
       if [[ -n "$pane_pid" ]]; then
-        # Check if claude is running in this pane
-        if ps -o comm= -g "$pane_pid" 2>/dev/null | grep -q "claude"; then
+        # Check if the agent's provider process is running in this pane
+        local proc_name
+        proc_name=$(provider_process_name "${AGENTS_PROVIDERS[$i]}")
+        if ps -o comm= -g "$pane_pid" 2>/dev/null | grep -q "$proc_name"; then
           status="running"
         else
           status="idle"
@@ -1634,6 +1704,13 @@ agents_init() {
       agents_yaml+="    auto_accept: true"$'\n'
     fi
 
+    # Provider
+    read -p "  Provider (claude/gemini) [claude]: " -r agent_provider
+    agent_provider="${agent_provider:-claude}"
+    if [[ "$agent_provider" != "claude" ]]; then
+      agents_yaml+="    provider: ${agent_provider}"$'\n'
+    fi
+
     echo ""
     agent_num=$((agent_num + 1))
     read -p "Add another agent? [Y/n]: " -n 1 -r add_more
@@ -1819,7 +1896,7 @@ dmux_update() {
 
 usage() {
   cat << EOF
-dmux v$VERSION - Launch development environments with tmux + Claude
+dmux v$VERSION - Launch development environments with tmux + AI coding agents
 
 USAGE:
   $(basename "$0") -p project1,project2    Launch projects
@@ -1833,7 +1910,8 @@ USAGE:
 OPTIONS:
   -p, --projects NAMES   Comma-separated list of projects to open
   -n, --panes NUM        Number of panes per window (default: 1)
-  -c, --claude NUM       Number of panes to run 'claude' in (default: 0)
+  -c, --claude NUM       Number of panes to run Claude Code in (default: 0)
+  -g, --gemini NUM       Number of panes to run Gemini CLI in (default: 0)
   -t, --terminal TERM    Terminal to use: alacritty, kitty, wezterm, iterm
                          (default: alacritty, or \$DMUX_TERMINAL)
   -l, --list             List all configured projects
@@ -1858,6 +1936,9 @@ EXAMPLES:
 
   # Launch with 3 panes, Claude running in 2 of them
   $(basename "$0") -p myapp -n 3 -c 2
+
+  # Launch with Claude and Gemini panes
+  $(basename "$0") -p myapp -n 4 -c 2 -g 2
 
   # Add a new project
   $(basename "$0") -a myapp ~/code/myapp
@@ -2036,6 +2117,7 @@ launch_project_window() {
   local project="$1"
   local panes="$2"
   local claude_panes="$3"
+  local gemini_panes="${4:-0}"
   local dir
   dir=$(get_project_path "$project")
   local session_name="dmux-$project"
@@ -2056,9 +2138,15 @@ launch_project_window() {
   # Layout
   setup_commands+="tmux select-layout -t '$session_name:0' tiled; "
 
-  # Launch claude
+  # Launch claude in first N panes
   for ((i=0; i<claude_panes && i<panes; i++)); do
     setup_commands+="tmux send-keys -t '$session_name:0.$i' 'claude' Enter; "
+  done
+
+  # Launch gemini in the next M panes
+  local gemini_start=$claude_panes
+  for ((i=gemini_start; i<gemini_start+gemini_panes && i<panes; i++)); do
+    setup_commands+="tmux send-keys -t '$session_name:0.$i' 'gemini' Enter; "
   done
 
   # Select first pane and attach
@@ -2085,6 +2173,7 @@ launch_project_window() {
 
 PANES=1
 CLAUDE_PANES=0
+GEMINI_PANES=0
 SELECTED_PROJECTS=()
 
 if [[ $# -eq 0 ]]; then
@@ -2164,6 +2253,11 @@ while [[ $# -gt 0 ]]; do
       CLAUDE_PANES="$2"
       shift 2
       ;;
+    -g|--gemini)
+      [[ -z "${2:-}" || "$2" == -* ]] && { echo "Error: -g requires a number"; exit 1; }
+      GEMINI_PANES="$2"
+      shift 2
+      ;;
     -t|--terminal)
       [[ -z "${2:-}" || "$2" == -* ]] && { echo "Error: -t requires terminal name"; exit 1; }
       TERMINAL="$2"
@@ -2215,6 +2309,11 @@ if ! [[ "$CLAUDE_PANES" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+if ! [[ "$GEMINI_PANES" =~ ^[0-9]+$ ]]; then
+  echo "Error: Gemini panes must be a number"
+  exit 1
+fi
+
 if [[ "$PANES" -gt 6 ]]; then
   echo "Warning: >6 panes may be cramped. Proceeding..."
 fi
@@ -2229,19 +2328,25 @@ done
 
 [[ $errors -gt 0 ]] && exit 1
 
-# Cap claude panes
+# Cap AI panes to total panes
 [[ "$CLAUDE_PANES" -gt "$PANES" ]] && CLAUDE_PANES="$PANES"
+_remaining=$((PANES - CLAUDE_PANES))
+[[ "$GEMINI_PANES" -gt "$_remaining" ]] && GEMINI_PANES="$_remaining"
 
 # Launch
-if [[ "$CLAUDE_PANES" -gt 0 ]]; then
-  echo "Launching ${#SELECTED_PROJECTS[@]} project(s) with $PANES pane(s) (claude in $CLAUDE_PANES)..."
+_ai_parts=()
+[[ "$CLAUDE_PANES" -gt 0 ]] && _ai_parts+=("claude in $CLAUDE_PANES")
+[[ "$GEMINI_PANES" -gt 0 ]] && _ai_parts+=("gemini in $GEMINI_PANES")
+if [[ ${#_ai_parts[@]} -gt 0 ]]; then
+  _ai_desc=$(IFS=', '; echo "${_ai_parts[*]}")
+  echo "Launching ${#SELECTED_PROJECTS[@]} project(s) with $PANES pane(s) (${_ai_desc})..."
 else
   echo "Launching ${#SELECTED_PROJECTS[@]} project(s) with $PANES pane(s)..."
 fi
 
 for project in "${SELECTED_PROJECTS[@]}"; do
   echo "  $project"
-  launch_project_window "$project" "$PANES" "$CLAUDE_PANES"
+  launch_project_window "$project" "$PANES" "$CLAUDE_PANES" "$GEMINI_PANES"
   sleep 0.3
 done
 

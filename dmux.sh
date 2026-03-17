@@ -891,6 +891,251 @@ cleanup_signal_dir() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# SCREENSHOT - Capture clipboard image and send path to tmux pane
+# ------------------------------------------------------------------------------
+
+screenshot_usage() {
+  cat << EOF
+dmux screenshot - Paste clipboard images into tmux sessions
+
+USAGE:
+  $(basename "$0") screenshot                  Save clipboard image & send path to active pane
+  $(basename "$0") screenshot --save-only      Save clipboard image without sending to pane
+  $(basename "$0") screenshot --session NAME   Target a specific tmux session
+  $(basename "$0") screenshot --pane INDEX     Target a specific pane index (default: active)
+  $(basename "$0") screenshot --dir PATH       Custom output directory (default: .dmux/screenshots)
+
+EXAMPLES:
+  $(basename "$0") screenshot                  # Grab clipboard image, send path to active pane
+  $(basename "$0") screenshot --save-only      # Just save to .dmux/screenshots/
+  $(basename "$0") screenshot -s my-session    # Send to active pane in session "my-session"
+
+NOTES:
+  macOS: Uses built-in osascript (no extra dependencies)
+  Linux: Requires xclip (sudo apt install xclip)
+EOF
+}
+
+# Save clipboard image to a file. Returns the file path on stdout.
+# Exits non-zero if no image is in the clipboard.
+clipboard_save_image() {
+  local output_path="$1"
+
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # macOS: use osascript to check clipboard for image and save via pasteboard
+    local has_image
+    has_image=$(osascript -e '
+      try
+        set imgData to the clipboard as «class PNGf»
+        return "yes"
+      on error
+        return "no"
+      end try
+    ' 2>/dev/null)
+
+    if [[ "$has_image" != "yes" ]]; then
+      return 1
+    fi
+
+    # Save the image using osascript
+    osascript -e '
+      set outPath to POSIX file "'"$output_path"'"
+      try
+        set imgData to the clipboard as «class PNGf»
+        set outFile to open for access outPath with write permission
+        set eof outFile to 0
+        write imgData to outFile
+        close access outFile
+      on error e
+        try
+          close access outPath
+        end try
+        error e
+      end try
+    ' 2>/dev/null
+  else
+    # Linux: use xclip
+    if ! command -v xclip &>/dev/null; then
+      echo "Error: xclip is required on Linux. Install with: sudo apt install xclip" >&2
+      return 1
+    fi
+
+    # Check if clipboard has an image
+    local targets
+    targets=$(xclip -selection clipboard -t TARGETS -o 2>/dev/null || echo "")
+    if ! echo "$targets" | grep -q "image/png"; then
+      return 1
+    fi
+
+    xclip -selection clipboard -t image/png -o > "$output_path" 2>/dev/null
+  fi
+
+  # Verify the file was actually created and is non-empty
+  if [[ ! -s "$output_path" ]]; then
+    rm -f "$output_path"
+    return 1
+  fi
+
+  return 0
+}
+
+handle_screenshot_command() {
+  local save_only=false
+  local target_session=""
+  local target_pane=""
+  local output_dir=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --save-only)
+        save_only=true
+        shift
+        ;;
+      -s|--session)
+        target_session="$2"
+        shift 2
+        ;;
+      --pane)
+        target_pane="$2"
+        shift 2
+        ;;
+      --dir)
+        output_dir="$2"
+        shift 2
+        ;;
+      -h|--help)
+        screenshot_usage
+        return 0
+        ;;
+      *)
+        echo "Error: Unknown option '$1'"
+        screenshot_usage
+        return 1
+        ;;
+    esac
+  done
+
+  # Determine output directory
+  if [[ -z "$output_dir" ]]; then
+    # Default: .dmux/screenshots in current directory
+    output_dir="$(pwd)/.dmux/screenshots"
+  fi
+  mkdir -p "$output_dir"
+
+  # Generate filename with timestamp
+  local timestamp
+  timestamp=$(date +%Y%m%d-%H%M%S)
+  local filename="screenshot-${timestamp}.png"
+  local filepath="${output_dir}/${filename}"
+
+  # Capture clipboard image
+  echo "Capturing clipboard image..."
+  if ! clipboard_save_image "$filepath"; then
+    echo "Error: No image found in clipboard."
+    echo "  Copy a screenshot to your clipboard first (e.g., Cmd+Shift+4 on macOS)."
+    return 1
+  fi
+
+  local filesize
+  filesize=$(wc -c < "$filepath" | tr -d ' ')
+  echo "Saved: $filepath (${filesize} bytes)"
+
+  if [[ "$save_only" == true ]]; then
+    return 0
+  fi
+
+  # Find the target tmux pane
+  if ! command -v tmux &>/dev/null; then
+    echo "Warning: tmux not found. Image saved but could not send path to pane."
+    return 0
+  fi
+
+  # If no session specified, try to find an active dmux session
+  if [[ -z "$target_session" ]]; then
+    # List dmux sessions (prefixed with "dmux-" or from agents config)
+    local sessions
+    sessions=$(tmux ls -F "#{session_name}" 2>/dev/null || echo "")
+    if [[ -z "$sessions" ]]; then
+      echo "No active tmux sessions found. Image saved to: $filepath"
+      return 0
+    fi
+
+    # If there's exactly one session, use it
+    local session_count
+    session_count=$(echo "$sessions" | wc -l | tr -d ' ')
+    if [[ "$session_count" -eq 1 ]]; then
+      target_session="$sessions"
+    else
+      echo ""
+      echo "Multiple tmux sessions found. Pick one:"
+      local i=1
+      while IFS= read -r s; do
+        echo "  [$i] $s"
+        i=$((i + 1))
+      done <<< "$sessions"
+      echo ""
+      printf "Session number (or Enter to skip): "
+      read -r choice
+      if [[ -z "$choice" ]]; then
+        echo "Image saved to: $filepath"
+        return 0
+      fi
+      target_session=$(echo "$sessions" | sed -n "${choice}p")
+      if [[ -z "$target_session" ]]; then
+        echo "Invalid choice. Image saved to: $filepath"
+        return 0
+      fi
+    fi
+  fi
+
+  # Verify session exists
+  if ! tmux has-session -t "$target_session" 2>/dev/null; then
+    echo "Error: tmux session '$target_session' not found."
+    echo "Image saved to: $filepath"
+    return 1
+  fi
+
+  # Determine target pane
+  local pane_target
+  if [[ -n "$target_pane" ]]; then
+    pane_target="${target_session}:0.${target_pane}"
+  else
+    # If there are multiple panes, let the user pick
+    local pane_indices
+    pane_indices=$(tmux list-panes -t "${target_session}:0" -F '#{pane_index}' 2>/dev/null || echo "")
+    local pane_count
+    pane_count=$(echo "$pane_indices" | wc -l | tr -d ' ')
+
+    if [[ "$pane_count" -eq 1 ]]; then
+      pane_target="${target_session}:0.0"
+    else
+      echo ""
+      echo "Panes in session '$target_session':"
+      while IFS= read -r idx; do
+        local pane_cmd
+        pane_cmd=$(tmux list-panes -t "${target_session}:0.${idx}" -F '#{pane_current_command}' 2>/dev/null || echo "unknown")
+        echo "  [$idx] ${pane_cmd}"
+      done <<< "$pane_indices"
+      echo ""
+      printf "Pane number (or Enter to skip): "
+      read -r pane_choice
+      if [[ -z "$pane_choice" ]]; then
+        echo "Image saved to: $filepath"
+        return 0
+      fi
+      pane_target="${target_session}:0.${pane_choice}"
+    fi
+  fi
+
+  # Send the file path to the pane
+  tmux send-keys -t "$pane_target" "$filepath" 2>/dev/null
+  echo "Sent path to pane: $pane_target"
+  echo ""
+  echo "Tip: The file path has been typed into the pane (not submitted)."
+  echo "     Switch to your tmux session and press Enter to use it."
+}
+
 # Send a desktop notification (macOS via osascript, Linux via notify-send).
 # Silently no-ops if neither tool is available.
 send_notification() {
@@ -1901,6 +2146,7 @@ dmux v$VERSION - Launch development environments with tmux + AI coding agents
 USAGE:
   $(basename "$0") -p project1,project2    Launch projects
   $(basename "$0") agents <action>         Multi-agent orchestration
+  $(basename "$0") screenshot               Paste clipboard image into a tmux pane
   $(basename "$0") ui                      Open the local web UI
   $(basename "$0") update                  Self-update to latest version
   $(basename "$0") -l                      List configured projects
@@ -2184,6 +2430,7 @@ fi
 # Route subcommands before flag parsing
 case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
+  screenshot) shift; handle_screenshot_command "$@"; exit $? ;;
   update) dmux_update; exit $? ;;
   ui)
     # Launch the dmux web UI

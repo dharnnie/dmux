@@ -16,6 +16,9 @@ dmux -p myapp -n 3 -c 2
 # Launch multiple Claude agents with isolated worktrees
 dmux agents start
 
+# Paste a screenshot into a tmux pane
+dmux screenshot
+
 # Open the local web UI
 dmux ui
 ```
@@ -107,6 +110,7 @@ dmux -p myapp -n 3 -c 2       # 3 panes, Claude in first 2
 | Flag | Description |
 |------|-------------|
 | `agents <action>` | Multi-agent orchestration (see below) |
+| `screenshot` | Paste clipboard image into a tmux pane (see below) |
 | `ui` | Launch the local web UI |
 | `-h, --help` | Show help |
 | `-v, --version` | Show version |
@@ -275,6 +279,42 @@ This starts a local server on `http://localhost:3100` and opens it in your brows
 - **Live Status** — Agent status table that auto-refreshes every 5 seconds
 
 See [`dmux-ui/README.md`](dmux-ui/README.md) for development setup and architecture details.
+
+---
+
+## Screenshot Paste
+
+tmux is text-only, so you can't paste images directly into panes. The `screenshot` command bridges this gap — it captures an image from your clipboard, saves it to disk, and sends the file path into a tmux pane so Claude Code can read it.
+
+### Usage
+
+```bash
+# Copy a screenshot to clipboard (e.g., Cmd+Shift+4 on macOS), then:
+dmux screenshot
+
+# Save clipboard image without sending to a pane
+dmux screenshot --save-only
+
+# Target a specific session and pane
+dmux screenshot --session my-api-agents --pane 2
+
+# Custom output directory
+dmux screenshot --dir ~/screenshots
+```
+
+### How it works
+
+1. You copy a screenshot to your clipboard
+2. Run `dmux screenshot`
+3. The image is saved to `.dmux/screenshots/screenshot-{timestamp}.png`
+4. If multiple tmux sessions or panes exist, you're prompted to pick one
+5. The file path is typed into the target pane — switch to tmux and press Enter
+
+Claude Code can read images by file path, so this works seamlessly as input.
+
+**Requirements:**
+- **macOS:** No extra dependencies (uses built-in `osascript`)
+- **Linux:** Requires `xclip` (`sudo apt install xclip`)
 
 ---
 

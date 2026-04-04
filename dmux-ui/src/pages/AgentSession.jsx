@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import AgentForm from '../components/AgentForm';
 import YamlPreview from '../components/YamlPreview';
 import StatusTable from '../components/StatusTable';
+import useAgentStatus from '../hooks/useAgentStatus';
 import styles from './AgentSession.module.css';
 
 const DEFAULT_CONFIG = {
@@ -182,6 +183,7 @@ export default function AgentSession() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [message, setMessage] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const agentStatus = useAgentStatus(name);
 
   useEffect(() => {
     // Try to load existing config
@@ -274,7 +276,7 @@ export default function AgentSession() {
 
       {isRunning ? (
         <>
-          <StatusTable projectName={name} />
+          <StatusTable {...agentStatus} />
           <div className={styles.bottomBar}>
             <button className={styles.btnOutline} onClick={handleCleanup}>
               Cleanup

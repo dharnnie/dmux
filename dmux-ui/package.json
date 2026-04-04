@@ -11,8 +11,11 @@
     "start": "NODE_ENV=production node server/index.js"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "cors": "^2.8.5",
     "express": "^4.21.0",
-    "cors": "^2.8.5"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",

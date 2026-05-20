@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseAgentsConfig, ConfigError } from '../src/config.js';
+import { parseAgentsConfig, ConfigError, MODELS_BY_PROVIDER } from '../src/config.js';
 
 describe('parseAgentsConfig', () => {
   describe('minimal valid config', () => {
@@ -152,6 +152,86 @@ agents:
     task: t
 `;
       expect(() => parseAgentsConfig(yaml)).toThrow(/must be in/);
+    });
+  });
+
+  describe('model', () => {
+    it('defaults model to null when unset (inherit provider default)', () => {
+      const yaml = `
+session: s
+agents:
+  - name: a
+    task: t
+`;
+      expect(parseAgentsConfig(yaml).agents[0].model).toBe(null);
+    });
+
+    it('accepts valid claude models', () => {
+      for (const model of ['opus', 'sonnet', 'haiku']) {
+        const yaml = `
+session: s
+agents:
+  - name: a
+    task: t
+    model: ${model}
+`;
+        expect(parseAgentsConfig(yaml).agents[0].model).toBe(model);
+      }
+    });
+
+    it('accepts valid gemini models when agent provider is gemini', () => {
+      for (const model of ['pro', 'flash']) {
+        const yaml = `
+session: s
+agents:
+  - name: a
+    task: t
+    provider: gemini
+    model: ${model}
+`;
+        expect(parseAgentsConfig(yaml).agents[0].model).toBe(model);
+      }
+    });
+
+    it('rejects model that does not match the agent provider', () => {
+      // opus is claude-only; not valid for a gemini agent.
+      const yaml = `
+session: s
+agents:
+  - name: a
+    task: t
+    provider: gemini
+    model: opus
+`;
+      expect(() => parseAgentsConfig(yaml)).toThrow(/must be one of \(gemini\)/);
+    });
+
+    it('rejects model that does not match the top-level provider when agent provider is unset', () => {
+      const yaml = `
+session: s
+provider: gemini
+agents:
+  - name: a
+    task: t
+    model: opus
+`;
+      expect(() => parseAgentsConfig(yaml)).toThrow(/must be one of \(gemini\)/);
+    });
+
+    it('exposes MODELS_BY_PROVIDER for UI consumption', () => {
+      expect(MODELS_BY_PROVIDER.claude).toEqual(['opus', 'sonnet', 'haiku']);
+      expect(MODELS_BY_PROVIDER.gemini).toEqual(['pro', 'flash']);
+    });
+
+    it('rejects unknown model strings even when provider is valid', () => {
+      const yaml = `
+session: s
+agents:
+  - name: a
+    task: t
+    model: turbo-3000
+`;
+      expect(() => parseAgentsConfig(yaml)).toThrow(/must be one of/);
     });
   });
 

@@ -8,6 +8,23 @@ const VALID_ROLES = new Set(['build', 'review', 'plan']);
 const VALID_PROVIDERS = new Set(['claude', 'gemini']);
 const VALID_ON_COMPLETE = new Set(['test', 'push', 'pr']);
 
+// Provider → valid model aliases. The bash side threads the chosen value
+// straight to `claude --model` / `gemini --model`. We keep these as short
+// aliases (opus/sonnet/haiku rather than claude-opus-4-7) because the CLIs
+// accept aliases and it matches how users describe models conversationally.
+// To support a new model, extend the set here and the bash side reads it
+// without any further change.
+const VALID_MODELS_BY_PROVIDER = {
+  claude: new Set(['opus', 'sonnet', 'haiku']),
+  gemini: new Set(['pro', 'flash']),
+};
+
+// Exported as plain arrays so the UI can render selects without duplicating
+// the list and so the bash side can introspect via JSON if needed later.
+export const MODELS_BY_PROVIDER = Object.fromEntries(
+  Object.entries(VALID_MODELS_BY_PROVIDER).map(([p, set]) => [p, [...set]]),
+);
+
 export class ConfigError extends Error {
   constructor(message, { field, agent } = {}) {
     super(message);
@@ -74,12 +91,18 @@ export function parseAgentsConfig(yamlText) {
       ? null
       : optionalEnum(a, 'provider', VALID_PROVIDERS, null, { agent: name });
 
+    // Model validation is provider-aware. If the agent doesn't set a provider,
+    // we validate against the resolved provider (top-level default).
+    const resolvedProvider = provider ?? config.provider;
+    const model = optionalModel(a, 'model', resolvedProvider, { agent: name });
+
     config.agents.push({
       name,
       role,
       branch: optionalString(a, 'branch', ''),
       task: optionalString(a, 'task', ''),
       provider,
+      model,
       auto_accept: optionalBool(a, 'auto_accept', false),
       scope: normalizeStringList(a.scope, 'scope', { agent: name }),
       context: normalizeStringList(a.context, 'context', { agent: name }),
@@ -137,6 +160,25 @@ function optionalEnum(obj, key, validSet, defaultValue, ctx = {}) {
     );
   }
   return v;
+}
+
+// Validate `model` per the resolved provider. Returns null if unset (the
+// provider's default is used at runtime).
+function optionalModel(obj, key, resolvedProvider, ctx = {}) {
+  const v = obj[key];
+  if (v == null) return null;
+  if (typeof v !== 'string' || v.trim() === '') {
+    throw new ConfigError(`'${key}' must be a non-empty string`, { field: key, ...ctx });
+  }
+  const trimmed = v.trim();
+  const validSet = VALID_MODELS_BY_PROVIDER[resolvedProvider];
+  if (validSet && !validSet.has(trimmed)) {
+    throw new ConfigError(
+      `'${key}' must be one of (${resolvedProvider}): ${[...validSet].join(', ')} (got: ${JSON.stringify(trimmed)})`,
+      { field: key, ...ctx },
+    );
+  }
+  return trimmed;
 }
 
 function normalizeStringList(value, field, ctx = {}) {

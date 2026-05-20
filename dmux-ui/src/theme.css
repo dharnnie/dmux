@@ -1,21 +1,51 @@
 :root {
+  /* Backgrounds */
   --bg-primary: #000000;
   --bg-secondary: #0a0a0a;
   --bg-card: #141414;
   --bg-card-hover: #1a1a1a;
+  --bg-card-active: #1f1f1f;
   --bg-input: #0d0d0d;
+
+  /* Borders */
   --border-subtle: rgba(255, 255, 255, 0.08);
   --border-hover: rgba(255, 255, 255, 0.15);
+
+  /* Text. NOTE: --text-muted (#555) fails WCAG AA at 2.4:1 contrast against
+     --bg-card. It is reserved for decorative use only (separator labels,
+     watermark-style hints). Never use it for content, errors, or labels —
+     reach for --text-secondary instead. */
   --text-primary: #fafafa;
   --text-secondary: #888888;
   --text-muted: #555555;
+
+  /* Accents */
   --accent-pink: #ff5492;
   --accent-cyan: #0099ff;
   --accent-green: #63ed40;
   --accent-orange: #ffa552;
+  --accent-red: #ff5555;
+
+  /* Radii */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+
+  /* Spacing scale. Use these for padding/gap instead of ad-hoc px values. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Focus ring. A two-layer ring (inner matches the page background, outer
+     uses --accent-cyan) so it stays visible against both --bg-primary and
+     --bg-card without distorting rounded corners. Applied via :focus-visible
+     below, so it only shows for keyboard users. */
+  --focus-ring: 0 0 0 2px var(--bg-primary), 0 0 0 4px var(--accent-cyan);
+
+  /* Typography */
   --font-sans: 'Inter', -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
 }
@@ -58,14 +88,68 @@ button {
   font-family: var(--font-sans);
   cursor: pointer;
   border: none;
-  outline: none;
 }
 
 input, textarea, select {
   font-family: var(--font-sans);
-  outline: none;
 }
 
 code, pre {
   font-family: var(--font-mono);
+}
+
+/* Focus visibility. Replaces Wave 1's global `outline: none`, which was
+   silently killing focus indicators for every keyboard user. :focus-visible
+   shows the ring for keyboard interactions only — mouse clicks don't trigger
+   it. */
+*:focus {
+  outline: none;
+}
+
+*:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Reduced motion. Honors the user's OS-level preference. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visually hidden utility — content reachable by screen readers / keyboard
+   focus but invisible until focused (used by the skip-to-main link). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.visually-hidden:focus,
+.visually-hidden:focus-visible {
+  position: fixed;
+  top: var(--space-3);
+  left: var(--space-3);
+  width: auto;
+  height: auto;
+  padding: var(--space-2) var(--space-4);
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  z-index: 9999;
+  text-decoration: none;
 }

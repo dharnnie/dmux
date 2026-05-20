@@ -1,18 +1,25 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import useAgentStatus from '../hooks/useAgentStatus';
 import StatusTable from '../components/StatusTable';
+import AgentTerminals from '../components/AgentTerminals';
+import GitPanel from '../components/GitPanel';
+import SkillPicker from '../components/SkillPicker';
+import { useToast } from '../components/Toasts';
 import styles from './ProjectDetail.module.css';
 
 export default function ProjectDetail() {
   const { name } = useParams();
   const navigate = useNavigate();
+  const toast = useToast();
   const [project, setProject] = useState(null);
   const [panes, setPanes] = useState(2);
   const [claudePanes, setClaudePanes] = useState(1);
-  const [message, setMessage] = useState('');
   const [hasConfig, setHasConfig] = useState(false);
 
-  useEffect(() => {
+  const agentStatus = useAgentStatus(name);
+
+  const fetchProject = () => {
     fetch('/api/projects')
       .then((r) => r.json())
       .then((projects) => {
@@ -22,10 +29,14 @@ export default function ProjectDetail() {
           setHasConfig(p.hasAgentsConfig);
         }
       });
+  };
+
+  useEffect(() => {
+    fetchProject();
   }, [name]);
 
   const handleLaunch = () => {
-    setMessage('Launching...');
+    toast('Launching tmux session...', 'info');
     fetch(`/api/projects/${name}/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -33,29 +44,32 @@ export default function ProjectDetail() {
     })
       .then((r) => r.json())
       .then((data) => {
-        setMessage(data.ok ? 'Launched! Check your terminal.' : `Error: ${data.error}`);
+        if (data.ok) toast('Launched! Check your terminal.', 'success');
+        else toast(data.error || 'Launch failed', 'error');
       })
-      .catch((e) => setMessage(`Error: ${e.message}`));
+      .catch((e) => toast(e.message, 'error'));
   };
 
   const handleStartAgents = () => {
-    setMessage('Starting agents...');
+    toast('Starting agents...', 'info');
     fetch(`/api/projects/${name}/agents/start`, { method: 'POST' })
       .then((r) => r.json())
       .then((data) => {
-        setMessage(data.ok ? 'Agents started! Check your terminal.' : `Error: ${data.error}`);
+        if (data.ok) toast('Agents started!', 'success');
+        else toast(data.error || 'Failed to start agents', 'error');
       })
-      .catch((e) => setMessage(`Error: ${e.message}`));
+      .catch((e) => toast(e.message, 'error'));
   };
 
   const handleCleanup = () => {
-    setMessage('Cleaning up...');
+    toast('Cleaning up...', 'info');
     fetch(`/api/projects/${name}/agents/cleanup`, { method: 'POST' })
       .then((r) => r.json())
       .then((data) => {
-        setMessage(data.ok ? 'Cleanup complete.' : `Error: ${data.error}`);
+        if (data.ok) toast('Cleanup complete.', 'success');
+        else toast(data.error || 'Cleanup failed', 'error');
       })
-      .catch((e) => setMessage(`Error: ${e.message}`));
+      .catch((e) => toast(e.message, 'error'));
   };
 
   const handleDelete = () => {
@@ -63,6 +77,16 @@ export default function ProjectDetail() {
     fetch(`/api/projects/${name}`, { method: 'DELETE' })
       .then((r) => r.json())
       .then(() => navigate('/'));
+  };
+
+  const handleSkillApplied = (skillName, started) => {
+    setHasConfig(true);
+    if (started) {
+      toast(`Skill "${skillName}" applied and agents started!`, 'success');
+    } else {
+      toast(`Skill "${skillName}" applied — config generated.`, 'success');
+    }
+    fetchProject();
   };
 
   if (!project) {
@@ -121,19 +145,18 @@ export default function ProjectDetail() {
           <h2 className={styles.cardTitle}>Agents</h2>
 
           {hasConfig ? (
-            <>
-              <div className={styles.agentActions}>
-                <Link to={`/projects/${name}/agents`} className={styles.btnPink}>
-                  Edit Config
-                </Link>
-                <button className={styles.btnCyan} onClick={handleStartAgents}>
-                  Start Agents
-                </button>
-                <button className={styles.btnDanger} onClick={handleCleanup}>
-                  Cleanup
-                </button>
-              </div>
-            </>
+            <div className={styles.agentActions}>
+              <Link to={`/projects/${name}/agents`} className={styles.btnPink}>
+                Edit Config
+              </Link>
+              <button className={styles.btnCyan} onClick={handleStartAgents}>
+                Start Agents
+              </button>
+              <SkillPicker projectName={name} onApplied={handleSkillApplied} />
+              <button className={styles.btnDanger} onClick={handleCleanup}>
+                Cleanup
+              </button>
+            </div>
           ) : (
             <>
               <p className={styles.noConfig}>No .dmux-agents.yml found for this project.</p>
@@ -141,15 +164,20 @@ export default function ProjectDetail() {
                 <Link to={`/projects/${name}/agents`} className={styles.btnPink}>
                   Create Agent Config
                 </Link>
+                <SkillPicker projectName={name} onApplied={handleSkillApplied} />
               </div>
             </>
           )}
         </div>
 
-        {/* Status (always show, will gracefully handle no session) */}
-        <StatusTable projectName={name} />
+        {/* Git info */}
+        <GitPanel projectName={name} />
 
-        {message && <div className={styles.message}>{message}</div>}
+        {/* Agent status — live via WebSocket */}
+        <StatusTable {...agentStatus} />
+
+        {/* Embedded terminals — click an agent tab to see its output */}
+        <AgentTerminals session={agentStatus.session} agents={agentStatus.agents} />
 
         {/* Danger zone */}
         <div className={styles.card}>

@@ -1,0 +1,25 @@
+name: test-coverage
+description: Identify untested code paths and write missing tests
+tags: [testing, coverage, quality]
+provider: claude
+
+agents:
+  - name: test-writer
+    role: build
+    branch: feat/improve-test-coverage
+    task: |
+      Analyze the codebase for test coverage gaps:
+      1. Find functions and modules that have no tests
+      2. Identify critical code paths (auth, payments, data mutations) lacking coverage
+      3. Check edge cases — error handling, boundary values, empty inputs
+      4. Look for tests that exist but don't assert meaningful behavior
+
+      Then write tests to close the most impactful gaps. Prioritize:
+      - Business-critical paths first
+      - Error handling paths second
+      - Edge cases third
+
+      Use the project's existing test framework and conventions.
+      Run the full test suite to make sure everything passes.
+    on_complete:
+      - test

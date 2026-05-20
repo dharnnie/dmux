@@ -2139,6 +2139,242 @@ dmux_update() {
   echo "Updated dmux: v${VERSION} -> v${new_version}"
 }
 
+# --- Skills ---
+
+SKILLS_DIR="${HOME}/.local/share/dmux/skills"
+BUILTIN_SKILLS_DIR=""  # Set at runtime from script location
+
+# Find the bundled skills directory (ships with the repo)
+get_builtin_skills_dir() {
+  local script_dir
+  script_dir="$(cd "$(dirname "$0")" && pwd)"
+  if [[ -d "$script_dir/skills" ]]; then
+    echo "$script_dir/skills"
+  elif [[ -d "${HOME}/.local/share/dmux/builtin-skills" ]]; then
+    echo "${HOME}/.local/share/dmux/builtin-skills"
+  else
+    echo ""
+  fi
+}
+
+# Parse a skill.yml — sets SKILL_* variables
+parse_skill_yaml() {
+  local file="$1"
+  [[ ! -f "$file" ]] && return 1
+
+  SKILL_NAME=""
+  SKILL_DESCRIPTION=""
+  SKILL_TAGS=""
+  SKILL_PROVIDER="claude"
+
+  while IFS= read -r line; do
+    local trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+    case "$trimmed" in
+      name:*)        SKILL_NAME="${trimmed#name: }" ;;
+      description:*) SKILL_DESCRIPTION="${trimmed#description: }" ;;
+      tags:*)        SKILL_TAGS="${trimmed#tags: }" ;;
+      provider:*)    SKILL_PROVIDER="${trimmed#provider: }" ;;
+    esac
+  done < "$file"
+}
+
+skills_list() {
+  local builtin_dir
+  builtin_dir=$(get_builtin_skills_dir)
+
+  echo "Available Skills"
+  echo ""
+
+  local found=0
+
+  # Installed skills
+  if [[ -d "$SKILLS_DIR" ]]; then
+    for skill_dir in "$SKILLS_DIR"/*/; do
+      [[ ! -f "${skill_dir}skill.yml" ]] && continue
+      parse_skill_yaml "${skill_dir}skill.yml"
+      printf "  %-20s %s  %s\n" "$SKILL_NAME" "$SKILL_DESCRIPTION" "(installed)"
+      found=$((found + 1))
+    done
+  fi
+
+  # Built-in skills (not yet installed)
+  if [[ -n "$builtin_dir" && -d "$builtin_dir" ]]; then
+    for skill_dir in "$builtin_dir"/*/; do
+      [[ ! -f "${skill_dir}skill.yml" ]] && continue
+      local dirname
+      dirname=$(basename "$skill_dir")
+      # Skip if already installed
+      [[ -d "$SKILLS_DIR/$dirname" ]] && continue
+      parse_skill_yaml "${skill_dir}skill.yml"
+      printf "  %-20s %s  %s\n" "$SKILL_NAME" "$SKILL_DESCRIPTION" "(available)"
+      found=$((found + 1))
+    done
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
+    echo "  No skills found."
+  fi
+}
+
+skills_install() {
+  local name="$1"
+  if [[ -z "$name" ]]; then
+    echo "Error: Skill name required. Usage: dmux skills install <name>"
+    return 1
+  fi
+
+  # Check if already installed
+  if [[ -d "$SKILLS_DIR/$name" && -f "$SKILLS_DIR/$name/skill.yml" ]]; then
+    echo "Skill '$name' is already installed."
+    return 0
+  fi
+
+  # Find source — built-in skills directory
+  local builtin_dir
+  builtin_dir=$(get_builtin_skills_dir)
+  local source=""
+
+  if [[ -n "$builtin_dir" && -d "$builtin_dir/$name" && -f "$builtin_dir/$name/skill.yml" ]]; then
+    source="$builtin_dir/$name"
+  fi
+
+  if [[ -z "$source" ]]; then
+    echo "Error: Skill '$name' not found."
+    echo ""
+    echo "Available skills:"
+    skills_list
+    return 1
+  fi
+
+  # Install
+  mkdir -p "$SKILLS_DIR"
+  cp -r "$source" "$SKILLS_DIR/$name"
+  parse_skill_yaml "$SKILLS_DIR/$name/skill.yml"
+  echo "Installed skill: $SKILL_NAME"
+  echo "  $SKILL_DESCRIPTION"
+}
+
+skills_remove() {
+  local name="$1"
+  if [[ -z "$name" ]]; then
+    echo "Error: Skill name required. Usage: dmux skills remove <name>"
+    return 1
+  fi
+
+  if [[ ! -d "$SKILLS_DIR/$name" ]]; then
+    echo "Error: Skill '$name' is not installed."
+    return 1
+  fi
+
+  rm -rf "$SKILLS_DIR/$name"
+  echo "Removed skill: $name"
+}
+
+skills_run() {
+  local name="$1"
+  local project="${2:-}"
+
+  if [[ -z "$name" ]]; then
+    echo "Error: Skill name required. Usage: dmux skills run <name> [project]"
+    return 1
+  fi
+
+  # Find the skill
+  local skill_dir=""
+  if [[ -d "$SKILLS_DIR/$name" ]]; then
+    skill_dir="$SKILLS_DIR/$name"
+  else
+    local builtin_dir
+    builtin_dir=$(get_builtin_skills_dir)
+    if [[ -n "$builtin_dir" && -d "$builtin_dir/$name" ]]; then
+      skill_dir="$builtin_dir/$name"
+    fi
+  fi
+
+  if [[ -z "$skill_dir" || ! -f "$skill_dir/skill.yml" ]]; then
+    echo "Error: Skill '$name' not found. Run 'dmux skills list' to see available skills."
+    return 1
+  fi
+
+  # Resolve project path for writing the temp config
+  local target_dir
+  if [[ -n "$project" ]]; then
+    target_dir=$(resolve_project_path "$project" 2>/dev/null || echo "")
+    if [[ -z "$target_dir" || ! -d "$target_dir" ]]; then
+      echo "Error: Project '$project' not found."
+      return 1
+    fi
+  else
+    target_dir="$(pwd)"
+  fi
+
+  # Generate .dmux-agents.yml from the skill
+  local skill_yml="$skill_dir/skill.yml"
+  local target_config="$target_dir/.dmux-agents.yml"
+
+  # Check if config already exists
+  if [[ -f "$target_config" ]]; then
+    read -rp "Overwrite existing .dmux-agents.yml? [y/N] " confirm
+    [[ "$confirm" != [yY] ]] && return 0
+  fi
+
+  # Extract the agents section from skill.yml and write as a proper dmux config
+  parse_skill_yaml "$skill_yml"
+  local session_name="skill-${name}"
+
+  # Copy skill.yml agents section into a proper dmux agents config
+  {
+    echo "session: $session_name"
+    echo "notifications: true"
+    echo ""
+    # Copy everything from 'agents:' line onwards
+    sed -n '/^agents:/,$p' "$skill_yml"
+  } > "$target_config"
+
+  echo "Generated .dmux-agents.yml from skill: $SKILL_NAME"
+  echo "  Config: $target_config"
+  echo ""
+  echo "Run 'dmux agents start${project:+ $project}' to launch."
+}
+
+skills_usage() {
+  cat << 'EOF'
+dmux skills — Reusable agent workflow templates
+
+USAGE:
+  dmux skills list                    List available and installed skills
+  dmux skills install <name>          Install a skill
+  dmux skills remove <name>           Uninstall a skill
+  dmux skills run <name> [project]    Generate agent config from skill and launch
+  dmux skills help                    Show this help
+
+EXAMPLES:
+  dmux skills list
+  dmux skills install security-audit
+  dmux skills run security-audit myproject
+  dmux skills remove security-audit
+EOF
+}
+
+handle_skills_command() {
+  local action="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$action" in
+    list)    skills_list ;;
+    install) skills_install "$@" ;;
+    remove)  skills_remove "$@" ;;
+    run)     skills_run "$@" ;;
+    help)    skills_usage ;;
+    *)
+      echo "Error: Unknown skills action '$action'"
+      echo "Run 'dmux skills help' for usage"
+      return 1
+      ;;
+  esac
+}
+
 usage() {
   cat << EOF
 dmux v$VERSION - Launch development environments with tmux + AI coding agents
@@ -2146,6 +2382,7 @@ dmux v$VERSION - Launch development environments with tmux + AI coding agents
 USAGE:
   $(basename "$0") -p project1,project2    Launch projects
   $(basename "$0") agents <action>         Multi-agent orchestration
+  $(basename "$0") skills <action>         Install and run reusable agent skills
   $(basename "$0") screenshot               Paste clipboard image into a tmux pane
   $(basename "$0") ui                      Open the local web UI
   $(basename "$0") update                  Self-update to latest version
@@ -2175,6 +2412,13 @@ AGENTS (multi-agent orchestration):
   $(basename "$0") agents cleanup [project]       Remove worktrees and kill session
   $(basename "$0") agents init                    Interactively generate .dmux-agents.yml
   $(basename "$0") agents help                    Show agents help
+
+SKILLS (reusable agent workflows):
+  $(basename "$0") skills list                    List available and installed skills
+  $(basename "$0") skills install <name>          Install a skill
+  $(basename "$0") skills remove <name>           Uninstall a skill
+  $(basename "$0") skills run <name> [project]    Generate config from skill and launch
+  $(basename "$0") skills help                    Show skills help
 
 EXAMPLES:
   # Launch two projects, each in their own terminal window
@@ -2430,6 +2674,7 @@ fi
 # Route subcommands before flag parsing
 case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
+  skills) shift; handle_skills_command "$@"; exit $? ;;
   screenshot) shift; handle_screenshot_command "$@"; exit $? ;;
   update) dmux_update; exit $? ;;
   ui)

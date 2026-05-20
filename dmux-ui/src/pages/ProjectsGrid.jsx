@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import ProjectCard from '../components/ProjectCard';
 import styles from './ProjectsGrid.module.css';
 
 export default function ProjectsGrid() {
   const [projects, setProjects] = useState([]);
+  const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPath, setNewPath] = useState('');
@@ -19,6 +20,23 @@ export default function ProjectsGrid() {
   useEffect(() => {
     fetchProjects();
   }, []);
+
+  // Sort: running first, then has agents config, then alphabetical
+  // Filter by search term
+  const filtered = useMemo(() => {
+    let list = projects;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(
+        (p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
+      );
+    }
+    return [...list].sort((a, b) => {
+      if (a.hasSession !== b.hasSession) return a.hasSession ? -1 : 1;
+      if (a.hasAgentsConfig !== b.hasAgentsConfig) return a.hasAgentsConfig ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [projects, search]);
 
   const handleAdd = () => {
     if (!newName.trim() || !newPath.trim()) {
@@ -49,16 +67,31 @@ export default function ProjectsGrid() {
     <div className={styles.page}>
       <div className={styles.header}>
         <h1 className={styles.title}>Projects</h1>
-        <button className={styles.addBtn} onClick={() => setShowAdd(true)}>
-          Add Project
-        </button>
+        <div className={styles.headerRight}>
+          {projects.length > 3 && (
+            <input
+              className={styles.search}
+              type="text"
+              placeholder="Search projects..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          )}
+          <button className={styles.addBtn} onClick={() => setShowAdd(true)}>
+            Add Project
+          </button>
+        </div>
       </div>
 
-      {projects.length > 0 ? (
+      {filtered.length > 0 ? (
         <div className={styles.grid}>
-          {projects.map((p) => (
+          {filtered.map((p) => (
             <ProjectCard key={p.name} project={p} />
           ))}
+        </div>
+      ) : search ? (
+        <div className={styles.empty}>
+          <p>No projects matching "{search}"</p>
         </div>
       ) : (
         <div className={styles.empty}>
@@ -93,6 +126,7 @@ export default function ProjectsGrid() {
                 placeholder="~/code/myproject"
                 onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
               />
+              <span className={styles.pathHint}>Absolute path or use ~ for home directory</span>
             </div>
 
             {error && <div className={styles.error}>{error}</div>}

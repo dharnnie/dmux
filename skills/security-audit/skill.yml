@@ -1,0 +1,29 @@
+name: security-audit
+description: Scan codebase for security vulnerabilities (OWASP top 10, dependency issues, secrets)
+tags: [security, audit, owasp]
+provider: claude
+
+agents:
+  - name: sec-scanner
+    role: build
+    branch: audit/security-scan
+    task: |
+      Perform a thorough security audit of this codebase. Check for:
+      1. Injection vulnerabilities (SQL, command, XSS)
+      2. Authentication and session management issues
+      3. Sensitive data exposure (hardcoded secrets, API keys, tokens)
+      4. Insecure dependencies (check package manifests)
+      5. Insecure file permissions or path traversal
+      6. CSRF, CORS misconfigurations
+      7. Improper error handling that leaks information
+
+      For each finding, document:
+      - Severity (critical/high/medium/low)
+      - File and line number
+      - Description of the vulnerability
+      - Recommended fix
+
+      Write your findings to SECURITY_AUDIT.md. If you find critical issues,
+      fix them directly and note what you changed.
+    on_complete:
+      - test

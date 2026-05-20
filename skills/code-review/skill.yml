@@ -1,0 +1,22 @@
+name: code-review
+description: Review recent changes for bugs, style issues, and improvement opportunities
+tags: [review, quality, bugs]
+provider: claude
+
+agents:
+  - name: reviewer
+    role: review
+    task: |
+      Review all recent changes on active branches. For each branch, run:
+        git diff main..<branch>
+
+      Evaluate changes for:
+      1. Correctness — logic errors, off-by-one, null handling
+      2. Security — injection, auth bypass, data leaks
+      3. Performance — N+1 queries, unnecessary allocations, blocking calls
+      4. Readability — unclear naming, missing context, overly complex logic
+      5. Test coverage — are new code paths tested?
+
+      Be specific. Reference file:line for each finding.
+      Categorize as: bug, security, performance, style, suggestion.
+      Write findings to CODE_REVIEW.md.

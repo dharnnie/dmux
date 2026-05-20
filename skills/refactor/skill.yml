@@ -1,0 +1,24 @@
+name: refactor
+description: Clean up code structure — extract functions, reduce duplication, improve naming
+tags: [refactor, cleanup, quality]
+provider: claude
+
+agents:
+  - name: refactorer
+    role: build
+    branch: refactor/cleanup
+    task: |
+      Analyze this codebase for refactoring opportunities. Focus on:
+      1. Duplicated code that should be extracted into shared functions
+      2. Long functions (>50 lines) that should be broken up
+      3. Poor naming — variables, functions, or files that don't describe their purpose
+      4. Dead code — unreachable branches, unused imports, commented-out blocks
+      5. Complex conditionals that should be simplified or extracted
+
+      Rules:
+      - Don't change behavior. Every refactor must be behavior-preserving.
+      - Don't refactor test files.
+      - Keep changes focused — one concern per commit.
+      - Run tests after each change to verify nothing broke.
+    on_complete:
+      - test

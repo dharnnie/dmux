@@ -1,0 +1,25 @@
+name: docs-gen
+description: Generate or update project documentation from code
+tags: [docs, documentation, readme]
+provider: claude
+
+agents:
+  - name: doc-writer
+    role: build
+    branch: docs/update
+    task: |
+      Analyze the codebase and generate/update documentation:
+      1. Read the existing README.md (if any) and note what's outdated or missing
+      2. Document the project structure — what each directory/module does
+      3. Document setup and installation steps
+      4. Document key APIs, CLI commands, or configuration options
+      5. Add usage examples for the most common workflows
+
+      Rules:
+      - Write for a developer who just cloned the repo
+      - Be concise — no filler paragraphs
+      - Use code blocks for commands and config examples
+      - If a README exists, update it rather than replacing it
+      - Don't document internal implementation details unless they affect usage
+    on_complete:
+      - pr

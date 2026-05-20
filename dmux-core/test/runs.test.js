@@ -65,12 +65,13 @@ describe('newRunId', () => {
 
 describe('createRun / readRun', () => {
   it('round-trips a basic run', () => {
-    const { id, dir, signalsDir } = createRun(projectDir, {
+    const { id, dir, signalsDir, plansDir } = createRun(projectDir, {
       configYaml: sampleYaml,
       agentsSummary: sampleAgents(),
     });
     expect(existsSync(join(dir, 'run.json'))).toBe(true);
     expect(existsSync(signalsDir)).toBe(true);
+    expect(existsSync(plansDir)).toBe(true);
 
     const run = readRun(projectDir, id);
     expect(run).not.toBeNull();

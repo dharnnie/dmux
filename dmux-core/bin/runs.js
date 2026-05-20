@@ -70,12 +70,12 @@ try {
       trigger.skill_name = process.env.DMUX_RUN_SKILL_NAME;
     }
 
-    const { id, dir, signalsDir } = createRun(projectPath, {
+    const { id, dir, signalsDir, plansDir } = createRun(projectPath, {
       configYaml: yamlText,
       agentsSummary,
       trigger,
     });
-    process.stdout.write(JSON.stringify({ id, dir, signalsDir }) + '\n');
+    process.stdout.write(JSON.stringify({ id, dir, signalsDir, plansDir }) + '\n');
     process.exit(0);
   }
 

@@ -1,0 +1,171 @@
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: var(--space-5);
+  transition: color 0.15s;
+}
+
+.backLink:hover {
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.loading,
+.error {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.error {
+  color: var(--accent-red);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-5);
+  margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.statusLine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.statusGlyph {
+  font-size: 14px;
+}
+
+.statusGlyph[data-tone='green'] { color: var(--accent-green); }
+.statusGlyph[data-tone='red'] { color: var(--accent-red); }
+.statusGlyph[data-tone='orange'] { color: var(--accent-orange); }
+.statusGlyph[data-tone='muted'] { color: var(--text-secondary); }
+
+.status {
+  color: var(--text-primary);
+  text-transform: capitalize;
+  font-weight: 500;
+}
+
+.elapsed {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: var(--text-primary);
+  margin-top: var(--space-1);
+}
+
+.meta {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table thead th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.table tbody td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cellName {
+  font-weight: 500;
+}
+
+.cellMono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.statusBadge[data-tone='green'] {
+  color: var(--accent-green);
+  border-color: color-mix(in srgb, var(--accent-green) 30%, var(--border-subtle));
+}
+.statusBadge[data-tone='red'] {
+  color: var(--accent-red);
+  border-color: color-mix(in srgb, var(--accent-red) 30%, var(--border-subtle));
+}
+.statusBadge[data-tone='orange'] {
+  color: var(--accent-orange);
+  border-color: color-mix(in srgb, var(--accent-orange) 30%, var(--border-subtle));
+}
+.statusBadge[data-tone='muted'] {
+  color: var(--text-secondary);
+}
+
+.tableHint {
+  margin-top: var(--space-3);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.yaml {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  padding: var(--space-4);
+  margin: 0;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: pre;
+}

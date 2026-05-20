@@ -78,6 +78,17 @@
   margin-top: var(--space-3);
 }
 
+.loading {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.historyList {
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
 /* Context */
 .contextHint {
   margin-top: var(--space-4);

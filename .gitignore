@@ -12,3 +12,7 @@ Thumbs.db
 
 # Local brainstorming
 brainstorm.md
+
+# dmux run state — created when this repo is itself used as a dmux project
+.dmux/
+.dmux-agents.yml

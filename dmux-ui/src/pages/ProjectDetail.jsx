@@ -6,6 +6,7 @@ import ProjectSummaryHeader from '../components/ProjectSummaryHeader';
 import Card, { CardTitle } from '../components/Card';
 import Button from '../components/Button';
 import Disclosure from '../components/Disclosure';
+import RunCard from '../components/RunCard';
 import { useToast } from '../components/Toasts';
 import styles from './ProjectDetail.module.css';
 
@@ -17,6 +18,7 @@ export default function ProjectDetail() {
   const [git, setGit] = useState(null);
   const [hasConfig, setHasConfig] = useState(false);
   const [agentCount, setAgentCount] = useState(null);
+  const [runs, setRuns] = useState(null); // null = loading, [] = no runs
 
   // Quick Launch (legacy tmux pane spawn — demoted to Settings)
   const [panes, setPanes] = useState(2);
@@ -50,10 +52,21 @@ export default function ProjectDetail() {
       .catch(() => setAgentCount(null));
   };
 
+  const fetchRuns = () => {
+    fetch(`/api/projects/${name}/runs`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setRuns)
+      .catch(() => setRuns([]));
+  };
+
   useEffect(() => {
     fetchProject();
     fetchGit();
     fetchAgentCount();
+    fetchRuns();
+    // Refresh runs periodically so status updates while one is running.
+    const id = setInterval(fetchRuns, 5000);
+    return () => clearInterval(id);
   }, [name]);
 
   const handleNewRun = () => {
@@ -143,17 +156,27 @@ export default function ProjectDetail() {
         )}
 
         <Card header={<CardTitle>History</CardTitle>}>
-          <div className={styles.empty}>
-            <p className={styles.emptyHeadline}>No runs yet on this project.</p>
-            <p className={styles.emptyHint}>
-              Run history persistence ships in a follow-up Wave 2A slice.
-            </p>
-            <div className={styles.emptyActions}>
-              <Button variant="primary" size="sm" onClick={handleNewRun}>
-                + New Run
-              </Button>
+          {runs === null ? (
+            <p className={styles.loading}>Loading runs…</p>
+          ) : runs.length === 0 ? (
+            <div className={styles.empty}>
+              <p className={styles.emptyHeadline}>No runs yet on this project.</p>
+              <p className={styles.emptyHint}>
+                Save and start a run from the editor to begin building history.
+              </p>
+              <div className={styles.emptyActions}>
+                <Button variant="primary" size="sm" onClick={handleNewRun}>
+                  + New Run
+                </Button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className={styles.historyList}>
+              {runs.slice(0, 8).map((r) => (
+                <RunCard key={r.id} run={{ ...r, project: name }} variant="row" showProject={false} />
+              ))}
+            </div>
+          )}
         </Card>
 
         <Card header={<CardTitle>Context</CardTitle>}>

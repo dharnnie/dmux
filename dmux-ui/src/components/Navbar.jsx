@@ -1,6 +1,12 @@
 import { Link, useLocation } from 'react-router-dom';
 import styles from './Navbar.module.css';
 
+const LINKS = [
+  { to: '/', label: 'Dashboard' },
+  { to: '/projects', label: 'Projects' },
+  { to: '/skills', label: 'Skills' },
+];
+
 export default function Navbar() {
   const { pathname } = useLocation();
   // Active match: exact for "/", prefix for everything else.
@@ -14,20 +20,16 @@ export default function Navbar() {
         </span>
       </Link>
       <div className={styles.nav}>
-        <Link
-          to="/"
-          className={`${styles.navLink} ${isActive('/') ? styles.navLinkActive : ''}`}
-          aria-current={isActive('/') ? 'page' : undefined}
-        >
-          Projects
-        </Link>
-        <Link
-          to="/skills"
-          className={`${styles.navLink} ${isActive('/skills') ? styles.navLinkActive : ''}`}
-          aria-current={isActive('/skills') ? 'page' : undefined}
-        >
-          Skills
-        </Link>
+        {LINKS.map((l) => (
+          <Link
+            key={l.to}
+            to={l.to}
+            className={`${styles.navLink} ${isActive(l.to) ? styles.navLinkActive : ''}`}
+            aria-current={isActive(l.to) ? 'page' : undefined}
+          >
+            {l.label}
+          </Link>
+        ))}
       </div>
     </nav>
   );

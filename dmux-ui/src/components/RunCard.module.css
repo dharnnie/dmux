@@ -1,0 +1,207 @@
+/* ------------ Full variant ------------ */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: var(--text-primary);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-hover);
+  text-decoration: none;
+}
+
+.tone_running { border-left: 3px solid var(--accent-green); }
+.tone_completed { border-left: 3px solid var(--accent-green); }
+.tone_failed { border-left: 3px solid var(--accent-red); }
+.tone_cyan { border-left: 3px solid var(--accent-cyan); }
+.tone_muted { border-left: 3px solid var(--border-subtle); }
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tone_running .dot,
+.tone_completed .dot { background: var(--accent-green); }
+.tone_failed .dot { background: var(--accent-red); }
+.tone_cyan .dot { background: var(--accent-cyan); }
+
+.dot[data-running] {
+  animation: cardPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cardPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status {
+  font-weight: 500;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+.project {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.timestamp,
+.elapsed {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.divider {
+  color: var(--text-muted);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.trigger {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.agentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.agentGlyph {
+  font-size: 10px;
+}
+
+.chip_running .agentGlyph,
+.chip_completed .agentGlyph { color: var(--accent-green); }
+.chip_failed .agentGlyph { color: var(--accent-red); }
+.chip_muted .agentGlyph { color: var(--text-secondary); }
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
+.viewLink {
+  font-size: 12px;
+  color: var(--accent-cyan);
+}
+
+/* ------------ Row variant ------------ */
+
+.row {
+  display: grid;
+  grid-template-columns: 16px 80px 100px 120px 1fr 80px 16px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  text-decoration: none;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.row:hover {
+  background: var(--bg-card-hover);
+  text-decoration: none;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.rowIcon {
+  font-size: 12px;
+}
+
+.row.tone_running .rowIcon,
+.row.tone_completed .rowIcon { color: var(--accent-green); }
+.row.tone_failed .rowIcon { color: var(--accent-red); }
+.row.tone_cyan .rowIcon { color: var(--accent-cyan); }
+.row.tone_muted .rowIcon { color: var(--text-secondary); }
+
+.rowStatus {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.rowProject {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowTimestamp {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.rowTrigger {
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowAgents {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.rowChevron {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.rowSpacer {
+  display: none;
+}

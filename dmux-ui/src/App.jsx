@@ -6,6 +6,7 @@ import ProjectsGrid from './pages/ProjectsGrid';
 import ProjectDetail from './pages/ProjectDetail';
 import AgentSession from './pages/AgentSession';
 import RunDetail from './pages/RunDetail';
+import AgentDetail from './pages/AgentDetail';
 import Skills from './pages/Skills';
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="/projects/:name" element={<ProjectDetail />} />
           <Route path="/projects/:name/agents" element={<AgentSession />} />
           <Route path="/projects/:name/runs/:runId" element={<RunDetail />} />
+          <Route path="/projects/:name/runs/:runId/agents/:agentName" element={<AgentDetail />} />
           <Route path="/skills" element={<Skills />} />
         </Routes>
       </main>

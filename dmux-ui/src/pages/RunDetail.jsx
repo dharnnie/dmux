@@ -115,12 +115,17 @@ export default function RunDetail() {
               <th>Branch</th>
               <th>Status</th>
               <th>Duration</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {run.agents.map((a) => (
-              <tr key={a.name}>
-                <td className={styles.cellName}>{a.name}</td>
+              <tr key={a.name} className={styles.row}>
+                <td className={styles.cellName}>
+                  <Link to={`/projects/${name}/runs/${runId}/agents/${a.name}`} className={styles.agentLink}>
+                    {a.name}
+                  </Link>
+                </td>
                 <td className={styles.cellMono}>{a.role}</td>
                 <td className={styles.cellMono}>{a.model ?? '—'}</td>
                 <td className={styles.cellMono}>{a.branch || '—'}</td>
@@ -130,6 +135,11 @@ export default function RunDetail() {
                   </span>
                 </td>
                 <td className={styles.cellMono}>{formatAgentDuration(run, a)}</td>
+                <td className={styles.cellOpen}>
+                  <Link to={`/projects/${name}/runs/${runId}/agents/${a.name}`} className={styles.openLink}>
+                    open →
+                  </Link>
+                </td>
               </tr>
             ))}
           </tbody>

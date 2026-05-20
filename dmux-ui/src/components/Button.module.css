@@ -1,0 +1,110 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-decoration: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.05s;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn:active:not(:disabled):not([aria-disabled='true']) {
+  transform: translateY(1px);
+}
+
+/* Sizes */
+.s_md {
+  padding: var(--space-2) var(--space-4);
+  font-size: 14px;
+  line-height: 1;
+  min-height: 36px;
+}
+
+.s_sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: 13px;
+  line-height: 1;
+  min-height: 28px;
+}
+
+/* Primary — solid pink fill, the single most-important action on a surface */
+.v_primary {
+  background: var(--accent-pink);
+  color: var(--bg-primary);
+  border-color: var(--accent-pink);
+}
+
+.v_primary:hover:not(:disabled):not([aria-disabled='true']) {
+  background: color-mix(in srgb, var(--accent-pink) 90%, white);
+  border-color: color-mix(in srgb, var(--accent-pink) 90%, white);
+}
+
+/* Secondary — outlined, for non-primary actions on the same surface */
+.v_secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.v_secondary:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--bg-card-hover);
+  border-color: var(--text-secondary);
+}
+
+/* Danger — outlined red, for destructive actions */
+.v_danger {
+  background: transparent;
+  color: var(--accent-red);
+  border-color: var(--accent-red);
+}
+
+.v_danger:hover:not(:disabled):not([aria-disabled='true']) {
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+}
+
+/* Ghost — no chrome, for tertiary inline actions */
+.v_ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+
+.v_ghost:hover:not(:disabled):not([aria-disabled='true']) {
+  color: var(--text-primary);
+  background: var(--bg-card-hover);
+}
+
+/* Loading state — spinner replaces label, width preserved */
+.loading .label {
+  visibility: hidden;
+}
+
+.loading .spinner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btnSpin 0.7s linear infinite;
+}
+
+.loading {
+  position: relative;
+}
+
+@keyframes btnSpin {
+  to { transform: rotate(360deg); }
+}

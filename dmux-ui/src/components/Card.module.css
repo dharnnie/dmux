@@ -1,0 +1,50 @@
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.header {
+  padding: var(--space-4) var(--space-5) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.body {
+  padding: var(--space-5);
+}
+
+.footer {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
+.title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Linked / interactive variants get hover + active treatment */
+.v_linked,
+.v_interactive {
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.v_linked:hover,
+.v_interactive:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-hover);
+  text-decoration: none;
+}
+
+.v_linked:active,
+.v_interactive:active {
+  background: var(--bg-card-active);
+}

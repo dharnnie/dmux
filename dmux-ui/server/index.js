@@ -28,6 +28,7 @@ import {
   readRunDetail,
   readAgentPlan,
   readAgentDiff,
+  stopRun,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -276,6 +277,23 @@ app.get('/api/projects/:name/runs/:runId/agents/:agentName/plan', (req, res) => 
     if (!plan) return res.status(404).json({ error: 'No plan file' });
     res.json(plan);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Stop a running run: kill its tmux session and mark cleaned. Worktrees
+// survive — the user can clean them up via the existing project-level
+// cleanup action.
+app.post('/api/projects/:name/runs/:runId/stop', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = stopRun(project.path, req.params.runId);
+    res.json(result);
+  } catch (e) {
+    if (e.code === 'not_found') return res.status(404).json({ error: e.message });
     res.status(500).json({ error: e.message });
   }
 });

@@ -1226,12 +1226,49 @@ build_agent_prompt() {
   local role="$4"
   local all_branches="$5"
   local on_complete="${6:-}"
+  # Plan-writing convention (added Wave 2A):
+  #   plan_output_path — when role=plan, the absolute path the agent must
+  #                      write its plan markdown to.
+  #   upstream_plans   — comma-separated "name:abs_path" pairs for any
+  #                      plan-role agents this agent depends on. The agent
+  #                      reads these before starting work.
+  local plan_output_path="${7:-}"
+  local upstream_plans="${8:-}"
 
   local prompt="$task"
 
+  # Prepend upstream-plan references (applies to plan, build, and review).
+  if [[ -n "$upstream_plans" ]]; then
+    local plan_block=""
+    plan_block+=$'\n\nUpstream plan(s) to read first:'
+    local IFS=','
+    for entry in $upstream_plans; do
+      local p_name="${entry%%:*}"
+      local p_path="${entry#*:}"
+      plan_block+=$'\n'"  - From ${p_name}: ${p_path}"
+    done
+    plan_block+=$'\n''Read these plans, follow their recommendations, and reference them when making implementation decisions.'
+    prompt+="$plan_block"
+  fi
+
+  if [[ "$role" == "plan" ]]; then
+    # Plan agents produce a markdown plan file. They don't write code into
+    # any worktree (they don't have one), don't get scope/context
+    # restrictions, and don't get on_complete shorthands — their job is the
+    # plan file itself.
+    if [[ -n "$plan_output_path" ]]; then
+      prompt+=$'\n\n''When you finish, write your plan as markdown to this exact path: '"${plan_output_path}"$'\n''Downstream agents that depend on you will read from this file. Make the plan detailed enough that another engineer could execute it without further questions: scope, steps, files to touch, edge cases, and what is explicitly out of scope.'
+    fi
+    echo "$prompt"
+    return
+  fi
+
   if [[ "$role" == "review" ]]; then
-    if [[ -z "$prompt" ]]; then
-      prompt="Review the changes on branches ${all_branches} for bugs, security issues, and adherence to project conventions. Use git diff main..<branch> to inspect changes."
+    if [[ -z "$task" ]]; then
+      # Separator only needed when an upstream-plan block already populated
+      # the prompt; otherwise leading newlines would be unsightly.
+      [[ -n "$prompt" ]] && prompt+=$'\n\n'
+      prompt+="Review the changes on branches ${all_branches} for bugs, security issues, and adherence to project conventions. Use git diff main..<branch> to inspect changes."
     fi
     echo "$prompt"
     return
@@ -1440,8 +1477,40 @@ agents_start() {
       agent_on_complete="$AGENTS_ON_COMPLETE_GLOBAL"
     fi
 
+    # Plan-writing convention. plan_output_path is set for plan-role agents
+    # so they know where to write their plan markdown; upstream_plans is a
+    # comma-separated "name:abs_path" list for any plan-role dependencies
+    # this agent has, so it can read from them.
+    local plan_output_path=""
+    if [[ "${AGENTS_ROLES[$i]}" == "plan" ]]; then
+      plan_output_path="$abs_root/.dmux/runs/$run_id/plans/${name}.md"
+    fi
+
+    local upstream_plans=""
+    if [[ -n "$deps" ]]; then
+      local _dep_arr
+      IFS=',' read -ra _dep_arr <<< "$deps"
+      for dep in "${_dep_arr[@]}"; do
+        local dep_idx=-1
+        for ((j=0; j<count; j++)); do
+          if [[ "${AGENTS_NAMES[$j]}" == "$dep" ]]; then
+            dep_idx=$j
+            break
+          fi
+        done
+        if [[ $dep_idx -ge 0 && "${AGENTS_ROLES[$dep_idx]}" == "plan" ]]; then
+          local dep_plan="$abs_root/.dmux/runs/$run_id/plans/${dep}.md"
+          if [[ -n "$upstream_plans" ]]; then
+            upstream_plans+=",${dep}:${dep_plan}"
+          else
+            upstream_plans="${dep}:${dep_plan}"
+          fi
+        fi
+      done
+    fi
+
     local full_prompt
-    full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches" "$agent_on_complete")
+    full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches" "$agent_on_complete" "$plan_output_path" "$upstream_plans")
 
     # Escape single quotes for safe shell embedding (single-quoted strings
     # prevent $, `, \, and ! expansion that double quotes would allow)

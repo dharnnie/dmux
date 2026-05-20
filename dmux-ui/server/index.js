@@ -23,6 +23,9 @@ import {
   removeSkill,
   applySkillToProject,
   createWsServer,
+  listRunsForProject,
+  listAllRuns,
+  readRunDetail,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -212,6 +215,48 @@ app.get('/api/projects/:name/agents/status/parsed', (req, res) => {
     const name = req.params.name;
     const status = getAgentStatusParsed(name);
     res.json(status);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Runs ---
+
+// List runs across all projects, newest first. Powers the Dashboard.
+app.get('/api/runs', (req, res) => {
+  try {
+    const runs = listAllRuns();
+    const limit = req.query.limit ? Number(req.query.limit) : null;
+    res.json(limit ? runs.slice(0, limit) : runs);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List runs for a single project, newest first. Powers Project Detail's History.
+app.get('/api/projects/:name/runs', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(listRunsForProject(project.path));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Full Run Detail with derived per-agent status.
+app.get('/api/projects/:name/runs/:runId', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const run = readRunDetail(project.path, req.params.runId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    res.json(run);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

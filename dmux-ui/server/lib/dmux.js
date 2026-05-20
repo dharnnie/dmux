@@ -4,6 +4,11 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { WebSocketServer } from 'ws';
 import { loadAgentsConfig as loadAgentsConfigParsedFromCore, ConfigError } from '../../../dmux-core/src/config.js';
+import {
+  listRuns as listRunsFromCore,
+  listAllRuns as listAllRunsFromCore,
+  readRun as readRunFromCore,
+} from '../../../dmux-core/src/runs.js';
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
   ? join(process.env.XDG_CONFIG_HOME, 'dmux')
@@ -76,6 +81,20 @@ export function loadAgentsConfigParsed(projectPath) {
 
 // Re-export so the route handler can do `instanceof ConfigError`.
 export { ConfigError };
+
+// --- Runs (dmux-core wrappers) ---
+
+export function listRunsForProject(projectPath) {
+  return listRunsFromCore(projectPath);
+}
+
+export function listAllRuns() {
+  return listAllRunsFromCore(parseProjectsFile());
+}
+
+export function readRunDetail(projectPath, runId) {
+  return readRunFromCore(projectPath, runId);
+}
 
 export function checkTmuxSession(sessionName) {
   try {

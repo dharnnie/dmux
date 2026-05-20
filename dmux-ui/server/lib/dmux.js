@@ -96,6 +96,82 @@ export function readRunDetail(projectPath, runId) {
   return readRunFromCore(projectPath, runId);
 }
 
+/**
+ * Read the markdown plan written by a plan-role agent (or consumed by a
+ * downstream agent). Returns { content, path } or null if no plan file
+ * exists.
+ *
+ * Convention: .dmux/runs/{runId}/plans/{agentName}.md. The convention isn't
+ * yet enforced by the agent-spawn prompt — that's a follow-up — so this
+ * endpoint will commonly return null until plan-writing is wired through.
+ */
+export function readAgentPlan(projectPath, runId, agentName) {
+  const planPath = join(projectPath, '.dmux', 'runs', runId, 'plans', `${agentName}.md`);
+  if (!existsSync(planPath)) return null;
+  return {
+    path: `.dmux/runs/${runId}/plans/${agentName}.md`,
+    content: readFileSync(planPath, 'utf-8'),
+  };
+}
+
+/**
+ * Compute the git diff for an agent's worktree against the run's base branch.
+ * Returns either { diff, branch, base } or { unavailable: true, reason }.
+ *
+ * Worktree path: {worktree_base}/{session}-{agentName}. We re-parse the
+ * frozen YAML stored on the run record to recover session + worktree_base.
+ */
+export async function readAgentDiff(projectPath, runId, agentName) {
+  const { parseAgentsConfig } = await import('../../../dmux-core/src/config.js');
+  const run = readRunFromCore(projectPath, runId);
+  if (!run) return { unavailable: true, reason: 'Run not found' };
+
+  const agent = run.config.agents.find((a) => a.name === agentName);
+  if (!agent) return { unavailable: true, reason: `Agent ${agentName} not in this run` };
+
+  if (agent.role === 'plan' || agent.role === 'review') {
+    return {
+      unavailable: true,
+      reason: `${agent.role} agents have no worktree to diff.`,
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = parseAgentsConfig(run.config.yaml);
+  } catch (e) {
+    return { unavailable: true, reason: `Couldn't re-parse frozen config: ${e.message}` };
+  }
+
+  const worktreeBase = parsed.worktree_base.startsWith('/')
+    ? parsed.worktree_base
+    : join(projectPath, parsed.worktree_base);
+  const worktreePath = join(worktreeBase, `${parsed.session}-${agentName}`);
+
+  if (!existsSync(worktreePath)) {
+    return {
+      unavailable: true,
+      reason: 'Worktree no longer exists (likely cleaned up).',
+    };
+  }
+
+  let base = 'main';
+  const baseFile = join(projectPath, '.dmux', 'base_branch');
+  if (existsSync(baseFile)) {
+    base = readFileSync(baseFile, 'utf-8').trim() || 'main';
+  }
+
+  try {
+    const diff = execSync(`git -C "${worktreePath}" diff --no-color "${base}"...HEAD`, {
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024 * 10, // 10MB
+    });
+    return { diff, branch: agent.branch || '(detached)', base };
+  } catch (e) {
+    return { unavailable: true, reason: `git diff failed: ${e.message}` };
+  }
+}
+
 export function checkTmuxSession(sessionName) {
   try {
     execSync(`tmux has-session -t "${sessionName}" 2>/dev/null`, {

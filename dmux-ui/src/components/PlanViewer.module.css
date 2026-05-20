@@ -1,0 +1,119 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+/* Headings inside the rendered markdown demote one level — the page already
+   owns <h1> (the agent name). The plan's H1 should not compete. */
+.markdown h1 { font-size: 20px; font-weight: 700; margin: var(--space-5) 0 var(--space-3); }
+.markdown h2 { font-size: 17px; font-weight: 600; margin: var(--space-5) 0 var(--space-2); }
+.markdown h3 { font-size: 15px; font-weight: 600; margin: var(--space-4) 0 var(--space-2); }
+.markdown h4 { font-size: 14px; font-weight: 600; margin: var(--space-3) 0 var(--space-2); color: var(--text-secondary); }
+
+.markdown p { margin: var(--space-3) 0; }
+
+.markdown ul, .markdown ol { margin: var(--space-3) 0; padding-left: var(--space-5); }
+.markdown li { margin: var(--space-1) 0; }
+
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-input);
+  padding: 1px var(--space-1);
+  border-radius: 3px;
+  color: var(--accent-pink);
+}
+
+.markdown pre {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  overflow-x: auto;
+  margin: var(--space-3) 0;
+}
+
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.markdown blockquote {
+  border-left: 3px solid var(--border-hover);
+  padding-left: var(--space-3);
+  color: var(--text-secondary);
+  margin: var(--space-3) 0;
+}
+
+.markdown a {
+  color: var(--accent-cyan);
+}
+
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: var(--space-5) 0;
+}
+
+.empty {
+  padding: var(--space-5);
+  color: var(--text-secondary);
+  font-size: 14px;
+  text-align: center;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.hint {
+  margin-top: var(--space-2);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.muted {
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: var(--space-3);
+}
+
+.error {
+  color: var(--accent-red);
+  font-size: 13px;
+  padding: var(--space-3);
+}
+
+.empty code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-input);
+  padding: 1px var(--space-1);
+  border-radius: 3px;
+}

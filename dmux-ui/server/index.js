@@ -10,6 +10,8 @@ import {
   hasAgentsConfig,
   readAgentsConfig,
   writeAgentsConfig,
+  loadAgentsConfigParsed,
+  ConfigError,
   getTmuxSessions,
   execDmux,
   execDmuxSync,
@@ -95,6 +97,29 @@ app.get('/api/projects/:name/agents-config', (req, res) => {
 
     res.type('text/plain').send(config);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Read agents config as parsed JSON (via dmux-core). Source of truth for the UI.
+app.get('/api/projects/:name/agents-config-parsed', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const config = loadAgentsConfigParsed(project.path);
+    if (!config) return res.status(404).json({ error: 'No .dmux-agents.yml found' });
+
+    res.json(config);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      return res.status(422).json({
+        error: e.message,
+        field: e.field ?? null,
+        agent: e.agent ?? null,
+      });
+    }
     res.status(500).json({ error: e.message });
   }
 });

@@ -39,10 +39,28 @@
   color: var(--text-secondary);
   font-size: 14px;
   font-weight: 500;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
   transition: color 0.15s;
 }
 
 .navLink:hover {
   color: var(--text-primary);
   text-decoration: none;
+}
+
+.navLinkActive {
+  color: var(--text-primary);
+  position: relative;
+}
+
+.navLinkActive::after {
+  content: '';
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: -2px;
+  height: 2px;
+  background: var(--accent-pink);
+  border-radius: 1px;
 }

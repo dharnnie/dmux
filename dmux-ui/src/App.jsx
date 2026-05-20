@@ -9,8 +9,9 @@ import Skills from './pages/Skills';
 export default function App() {
   return (
     <ToastProvider>
+      <a href="#main" className="visually-hidden">Skip to main content</a>
       <Navbar />
-      <main style={{ flex: 1, padding: '24px 32px' }}>
+      <main id="main" style={{ flex: 1, padding: '24px 32px' }}>
         <Routes>
           <Route path="/" element={<ProjectsGrid />} />
           <Route path="/projects/:name" element={<ProjectDetail />} />

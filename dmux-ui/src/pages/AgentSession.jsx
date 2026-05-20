@@ -85,97 +85,38 @@ function configToYaml(config) {
   return yaml;
 }
 
-function parseYamlToConfig(yamlText) {
-  const config = { ...DEFAULT_CONFIG, on_complete: { ...DEFAULT_CONFIG.on_complete }, agents: [] };
+// Adapts the normalized config from dmux-core's parser into the local form-state
+// shape this component currently uses (comma-separated strings for path lists,
+// object form for on_complete). This is a transitional shim — the agent editor
+// refactor in Wave 2A replaces the form internals with real list editors and
+// removes this adapter.
+function parsedConfigToFormState(parsed) {
+  const oncListToObj = (list) => ({
+    test: list.includes('test'),
+    push: list.includes('push'),
+    pr: list.includes('pr'),
+  });
 
-  const lines = yamlText.split('\n');
-  let currentAgent = null;
-  let inAgentsList = false;
-  let inList = null; // 'scope', 'context', 'depends_on', 'on_complete', 'global_on_complete'
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Agent list item start
-    const agentMatch = trimmed.match(/^-\s*name:\s*(.+)/);
-    if (agentMatch) {
-      if (currentAgent) config.agents.push(currentAgent);
-      currentAgent = {
-        name: agentMatch[1].trim().replace(/^["']|["']$/g, ''),
-        branch: '', task: '', role: 'build', auto_accept: false,
-        depends_on: '', scope: '', context: '',
-        on_complete: { test: false, push: false, pr: false },
-      };
-      inAgentsList = true;
-      inList = null;
-      continue;
-    }
-
-    // List items
-    const listItem = trimmed.match(/^-\s+(.+)/);
-    if (listItem && inList) {
-      const val = listItem[1].trim();
-      if (inList === 'global_on_complete') {
-        if (val === 'test') config.on_complete.test = true;
-        if (val === 'push') config.on_complete.push = true;
-        if (val === 'pr') config.on_complete.pr = true;
-      } else if (currentAgent) {
-        if (inList === 'scope') {
-          currentAgent.scope = currentAgent.scope ? `${currentAgent.scope}, ${val}` : val;
-        } else if (inList === 'context') {
-          currentAgent.context = currentAgent.context ? `${currentAgent.context}, ${val}` : val;
-        } else if (inList === 'depends_on') {
-          currentAgent.depends_on = currentAgent.depends_on ? `${currentAgent.depends_on}, ${val}` : val;
-        } else if (inList === 'on_complete') {
-          if (val === 'test') currentAgent.on_complete.test = true;
-          if (val === 'push') currentAgent.on_complete.push = true;
-          if (val === 'pr') currentAgent.on_complete.pr = true;
-        }
-      }
-      continue;
-    }
-
-    // Non-list-item resets inList
-    if (!trimmed.startsWith('-')) inList = null;
-
-    if (currentAgent) {
-      const kv = trimmed.match(/^(\w+):\s*(.*)/);
-      if (kv) {
-        const [, key, rawVal] = kv;
-        const val = rawVal.trim().replace(/^["']|["']$/g, '');
-        switch (key) {
-          case 'branch': currentAgent.branch = val; break;
-          case 'task': currentAgent.task = val; break;
-          case 'role': currentAgent.role = val; break;
-          case 'auto_accept': currentAgent.auto_accept = val === 'true'; break;
-          case 'scope': inList = 'scope'; break;
-          case 'context': inList = 'context'; break;
-          case 'depends_on': inList = 'depends_on'; break;
-          case 'on_complete': inList = 'on_complete'; break;
-        }
-        continue;
-      }
-    }
-
-    // Top-level keys
-    const topKv = trimmed.match(/^(\w+):\s*(.*)/);
-    if (topKv && !inAgentsList) {
-      const [, key, rawVal] = topKv;
-      const val = rawVal.trim().replace(/^["']|["']$/g, '');
-      switch (key) {
-        case 'session': config.session = val; break;
-        case 'worktree_base': config.worktree_base = val; break;
-        case 'main_pane': config.main_pane = val === 'true'; break;
-        case 'namespace_branches': config.namespace_branches = val === 'true'; break;
-        case 'on_complete': inList = 'global_on_complete'; break;
-        case 'agents': inAgentsList = true; break;
-      }
-    }
-  }
-
-  if (currentAgent) config.agents.push(currentAgent);
-  return config;
+  return {
+    session: parsed.session,
+    worktree_base: parsed.worktree_base,
+    main_pane: parsed.main_pane,
+    namespace_branches: parsed.namespace_branches,
+    on_complete: oncListToObj(parsed.on_complete),
+    agents: parsed.agents.map((a) => ({
+      name: a.name,
+      branch: a.branch,
+      task: a.task,
+      role: a.role,
+      auto_accept: a.auto_accept,
+      depends_on: a.depends_on.join(', '),
+      scope: a.scope.join(', '),
+      context: a.context.join(', '),
+      // null on the parsed side means "inherit global"; the form represents that
+      // as all-false. Wave 2A's editor refactor will surface inheritance properly.
+      on_complete: oncListToObj(a.on_complete ?? []),
+    })),
+  };
 }
 
 export default function AgentSession() {
@@ -186,19 +127,33 @@ export default function AgentSession() {
   const agentStatus = useAgentStatus(name);
 
   useEffect(() => {
-    // Try to load existing config
-    fetch(`/api/projects/${name}/agents-config`)
-      .then((r) => {
-        if (r.ok) return r.text();
-        return null;
-      })
-      .then((text) => {
-        if (text) {
-          setConfig(parseYamlToConfig(text));
-        } else {
-          setConfig({ ...DEFAULT_CONFIG, session: `${name}-agents`, on_complete: { ...DEFAULT_CONFIG.on_complete }, agents: [] });
+    // Load existing config via the dmux-core-backed parsed endpoint.
+    // The endpoint returns 404 if no .dmux-agents.yml exists, 422 with
+    // {error, field, agent} on validation failures, or 200 with the normalized
+    // config object.
+    fetch(`/api/projects/${name}/agents-config-parsed`)
+      .then(async (r) => {
+        if (r.ok) {
+          const parsed = await r.json();
+          setConfig(parsedConfigToFormState(parsed));
+          return;
         }
-      });
+        if (r.status === 404) {
+          setConfig({
+            ...DEFAULT_CONFIG,
+            session: `${name}-agents`,
+            on_complete: { ...DEFAULT_CONFIG.on_complete },
+            agents: [],
+          });
+          return;
+        }
+        if (r.status === 422) {
+          const body = await r.json();
+          const where = body.agent ? `agent '${body.agent}': ` : '';
+          setMessage(`Config invalid — ${where}${body.error}`);
+        }
+      })
+      .catch((e) => setMessage(`Couldn't load config: ${e.message}`));
 
     // Check if agents are running
     fetch(`/api/projects/${name}/agents/status`)

@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { WebSocketServer } from 'ws';
+import { loadAgentsConfig as loadAgentsConfigParsedFromCore, ConfigError } from '../../../dmux-core/src/config.js';
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
   ? join(process.env.XDG_CONFIG_HOME, 'dmux')
@@ -65,6 +66,16 @@ export function writeAgentsConfig(projectPath, content) {
   const configPath = join(projectPath, '.dmux-agents.yml');
   writeFileSync(configPath, content);
 }
+
+// Returns the parsed, normalized config object from dmux-core, or null if no
+// .dmux-agents.yml exists. Throws ConfigError on validation failures — the
+// caller is responsible for surfacing field/agent context to the client.
+export function loadAgentsConfigParsed(projectPath) {
+  return loadAgentsConfigParsedFromCore(projectPath);
+}
+
+// Re-export so the route handler can do `instanceof ConfigError`.
+export { ConfigError };
 
 export function checkTmuxSession(sessionName) {
   try {

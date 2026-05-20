@@ -26,6 +26,8 @@ import {
   listRunsForProject,
   listAllRuns,
   readRunDetail,
+  readAgentPlan,
+  readAgentDiff,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -257,6 +259,36 @@ app.get('/api/projects/:name/runs/:runId', (req, res) => {
     if (!run) return res.status(404).json({ error: 'Run not found' });
 
     res.json(run);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Read a plan markdown file produced (or consumed) by an agent.
+// 404 if no plan file exists at the conventional path.
+app.get('/api/projects/:name/runs/:runId/agents/:agentName/plan', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const plan = readAgentPlan(project.path, req.params.runId, req.params.agentName);
+    if (!plan) return res.status(404).json({ error: 'No plan file' });
+    res.json(plan);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Git diff for an agent's worktree against the run's base branch.
+app.get('/api/projects/:name/runs/:runId/agents/:agentName/diff', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = await readAgentDiff(project.path, req.params.runId, req.params.agentName);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

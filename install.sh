@@ -19,6 +19,7 @@ REPO_URL="https://github.com/dharnnie/dmux"
 INSTALL_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dmux"
 UI_DIR="${HOME}/.local/share/dmux/ui"
+CORE_DIR="${HOME}/.local/share/dmux/core"
 INSTALL_UI=false
 
 # Colors
@@ -45,6 +46,13 @@ check_dependencies() {
   # Required
   command -v tmux >/dev/null 2>&1 || missing+=("tmux")
   command -v bash >/dev/null 2>&1 || missing+=("bash")
+
+  # node is needed for the agents feature (and the UI). jq has its own
+  # interactive install path below; node is left as a warning because its
+  # install paths vary too much (system package, nvm, fnm, asdf) to choose
+  # one safely.
+  local missing_optional=()
+  command -v node >/dev/null 2>&1 || missing_optional+=("node")
 
   # At least one terminal
   local has_terminal=false
@@ -78,7 +86,80 @@ Install them first:
     [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
   fi
 
+  if [[ ${#missing_optional[@]} -gt 0 ]]; then
+    warn "Missing optional dependencies: ${missing_optional[*]}"
+    echo "    Required by 'dmux agents' (multi-agent orchestration) and 'dmux ui'."
+    echo "    Basic dmux launching will still work without them."
+    echo ""
+    echo "    Install Node.js: https://nodejs.org (or via brew/apt/nvm/fnm/asdf)"
+    echo ""
+  fi
+
+  ensure_jq
+
   success "Dependencies OK"
+}
+
+# Detect the system package manager and return the command for installing
+# the given package, or empty string if none is detected.
+detect_install_cmd() {
+  local pkg="$1"
+  if command -v brew >/dev/null 2>&1; then
+    echo "brew install $pkg"
+  elif command -v apt-get >/dev/null 2>&1; then
+    echo "sudo apt-get install -y $pkg"
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "sudo dnf install -y $pkg"
+  elif command -v pacman >/dev/null 2>&1; then
+    echo "sudo pacman -S --noconfirm $pkg"
+  elif command -v zypper >/dev/null 2>&1; then
+    echo "sudo zypper install -y $pkg"
+  fi
+}
+
+# If jq is missing, offer to install it via the detected package manager.
+# Skips the prompt when stdin isn't a TTY (e.g. `curl | bash`) so we never
+# silently install system packages without consent.
+ensure_jq() {
+  if command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local install_cmd
+  install_cmd="$(detect_install_cmd jq)"
+
+  if [[ -z "$install_cmd" ]]; then
+    warn "jq is required for 'dmux agents' but is not installed."
+    echo "    No supported package manager detected. Install jq manually."
+    echo ""
+    return 0
+  fi
+
+  warn "jq is required for 'dmux agents' but is not installed."
+  echo "    Proposed: $install_cmd"
+
+  # Non-interactive (curl-pipe): don't prompt, don't install.
+  if [[ ! -t 0 ]]; then
+    echo "    Re-run install.sh from a clone to be prompted, or run the above manually."
+    echo ""
+    return 0
+  fi
+
+  echo ""
+  read -p "Install jq now? [Y/n] " -n 1 -r
+  echo ""
+  if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+    echo "    Skipping. 'dmux agents' commands will fail until you run: $install_cmd"
+    echo ""
+    return 0
+  fi
+
+  info "Installing jq via $(echo "$install_cmd" | awk '{print $1}')..."
+  if eval "$install_cmd"; then
+    success "Installed jq ($(jq --version 2>/dev/null || echo present))"
+  else
+    warn "jq install failed. Run manually: $install_cmd"
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -149,6 +230,53 @@ EOF
   else
     success "Config exists: $CONFIG_DIR/projects"
   fi
+}
+
+install_core() {
+  info "Installing dmux-core..."
+
+  if ! command -v node >/dev/null 2>&1; then
+    warn "Node.js not installed — skipping dmux-core."
+    echo "    'dmux agents' commands will not work until you install node and re-run this script."
+    return 0
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    warn "npm not installed — skipping dmux-core."
+    return 0
+  fi
+
+  mkdir -p "$CORE_DIR"
+
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+  if [[ -d "$script_dir/dmux-core" ]]; then
+    # Local install from cloned repo
+    cp -r "$script_dir/dmux-core/package.json" "$CORE_DIR/"
+    cp -r "$script_dir/dmux-core/package-lock.json" "$CORE_DIR/" 2>/dev/null || true
+    cp -r "$script_dir/dmux-core/src" "$CORE_DIR/"
+    cp -r "$script_dir/dmux-core/bin" "$CORE_DIR/"
+    cp -r "$script_dir/dmux-core/README.md" "$CORE_DIR/" 2>/dev/null || true
+  else
+    info "Downloading dmux-core from $REPO_URL..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    git clone --depth 1 "$REPO_URL" "$tmpdir" 2>/dev/null
+    cp -r "$tmpdir/dmux-core/"* "$CORE_DIR/"
+    rm -rf "$tmpdir"
+  fi
+
+  chmod +x "$CORE_DIR/bin/parse-config.js" 2>/dev/null || true
+
+  info "Installing dmux-core dependencies..."
+  (cd "$CORE_DIR" && npm install --omit=dev --silent 2>/dev/null) || {
+    warn "Failed to install dmux-core dependencies."
+    echo "    Run manually: cd $CORE_DIR && npm install --omit=dev"
+    return 1
+  }
+
+  success "Installed dmux-core to $CORE_DIR"
 }
 
 install_ui() {
@@ -242,6 +370,7 @@ main() {
   check_dependencies
   install_script
   setup_config
+  install_core
   install_ui
   check_path
 

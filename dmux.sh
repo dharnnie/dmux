@@ -642,20 +642,59 @@ remove_worktrees() {
 # SIGNAL / MARKER FILE MANAGEMENT
 # ------------------------------------------------------------------------------
 
-setup_signal_dir() {
+# Create a new Run record via dmux-core. Echoes "{id}|{signalsDir}" on success.
+# Writes the active run id to .dmux/active_run so downstream commands can find it.
+start_run() {
   local project_root="$1"
-  local signal_dir="$project_root/.dmux/signals"
-  rm -rf "$signal_dir"
-  mkdir -p "$signal_dir"
-  echo "$signal_dir"
+  resolve_dmux_core || return 1
+  require_command "node" "creating run records (dmux-core)" || return 1
+
+  local json
+  if ! json=$(node "$DMUX_CORE_RESOLVED/bin/runs.js" create "$project_root" 2>&1); then
+    echo "$json" >&2
+    return 1
+  fi
+
+  local id signals_dir
+  id=$(echo "$json" | jq -r '.id')
+  signals_dir=$(echo "$json" | jq -r '.signalsDir')
+
+  mkdir -p "$project_root/.dmux"
+  echo "$id" > "$project_root/.dmux/active_run"
+  echo "${id}|${signals_dir}"
 }
 
-cleanup_signal_dir() {
+# Read the active run id from .dmux/active_run, or empty if none.
+active_run_id() {
   local project_root="$1"
-  local dmux_dir="$project_root/.dmux"
-  if [[ -d "$dmux_dir" ]]; then
-    rm -rf "$dmux_dir"
-    echo "  Removed signal directory: $dmux_dir"
+  local f="$project_root/.dmux/active_run"
+  [[ -f "$f" ]] || return 1
+  cat "$f"
+}
+
+# Resolve the signals directory for the currently-active run, or empty.
+active_signals_dir() {
+  local project_root="$1"
+  local id
+  id=$(active_run_id "$project_root") || return 1
+  echo "$project_root/.dmux/runs/$id/signals"
+}
+
+# Tear down active-run state. Replaces the old "rm -rf .dmux/" behavior — the
+# run record under .dmux/runs/{id}/ is now history that should survive cleanup.
+# We only remove the active_run pointer and any legacy flat signals/ dir.
+cleanup_active_run() {
+  local project_root="$1"
+  local id
+  if id=$(active_run_id "$project_root"); then
+    resolve_dmux_core 2>/dev/null && \
+      node "$DMUX_CORE_RESOLVED/bin/runs.js" mark-cleaned "$project_root" "$id" 2>/dev/null || true
+    rm -f "$project_root/.dmux/active_run"
+    echo "  Marked run cleaned: $id"
+  fi
+  # Legacy flat signals/ directory from pre-runs builds — remove if present.
+  if [[ -d "$project_root/.dmux/signals" ]]; then
+    rm -rf "$project_root/.dmux/signals"
   fi
 }
 
@@ -1309,9 +1348,14 @@ agents_start() {
   local abs_root
   abs_root=$(cd "$project_root" && pwd)
 
-  # Set up signal directory for marker files (use absolute path so all agents resolve it correctly)
-  local signal_dir
-  signal_dir=$(setup_signal_dir "$abs_root")
+  # Create the Run record via dmux-core. This persists the frozen config +
+  # lifecycle metadata under .dmux/runs/{id}/ and gives us a per-run signals
+  # directory that survives subsequent runs.
+  local run_info run_id signal_dir
+  run_info=$(start_run "$abs_root") || { echo "Failed to create run record" >&2; exit 1; }
+  run_id="${run_info%%|*}"
+  signal_dir="${run_info#*|}"
+  echo "Run: $run_id"
   echo "Signal directory: $signal_dir"
 
   # Save base branch for changelog generation
@@ -1497,7 +1541,11 @@ agents_status() {
 
   local project_root
   project_root=$(resolve_project_root "$config_file" "$project")
-  local signal_dir="$project_root/.dmux/signals"
+  # Find the active run's signals directory. Falls back to the legacy flat
+  # signals/ path so `dmux agents status` still works for pre-runs sessions.
+  local signal_dir
+  signal_dir=$(active_signals_dir "$project_root" 2>/dev/null) || \
+    signal_dir="$project_root/.dmux/signals"
 
   # Check if session exists
   if ! tmux has-session -t "$AGENTS_SESSION" 2>/dev/null; then
@@ -1618,7 +1666,7 @@ agents_cleanup() {
   echo ""
 
   # Remove signal directory
-  cleanup_signal_dir "$project_root"
+  cleanup_active_run "$project_root"
 
   # Remove worktrees
   echo "Removing worktrees..."

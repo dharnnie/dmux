@@ -8,6 +8,7 @@ import {
   listRuns as listRunsFromCore,
   listAllRuns as listAllRunsFromCore,
   readRun as readRunFromCore,
+  markRunCleaned as markRunCleanedFromCore,
 } from '../../../dmux-core/src/runs.js';
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
@@ -121,6 +122,55 @@ export function readAgentPlan(projectPath, runId, agentName) {
  * Worktree path: {worktree_base}/{session}-{agentName}. We re-parse the
  * frozen YAML stored on the run record to recover session + worktree_base.
  */
+/**
+ * Stop a running Run: kill the tmux session it owns, mark the run cleaned
+ * in dmux-core, and remove the .dmux/active_run pointer. Worktrees survive
+ * — that matches the Section 6 copy and gives the user the choice between
+ * stopping (interrupt) and cleaning (interrupt + remove worktrees).
+ *
+ * Returns { ok: true, sessionWasAlive } on success, throws on failure.
+ */
+export function stopRun(projectPath, runId) {
+  const run = readRunFromCore(projectPath, runId);
+  if (!run) {
+    const err = new Error('Run not found');
+    err.code = 'not_found';
+    throw err;
+  }
+
+  // Extract the session name from the frozen YAML. We don't re-validate the
+  // YAML here — even if it has drifted from current dmux-core rules, this
+  // run was already created against it, so the session line is still good.
+  const sessionLine = (run.config.yaml || '').match(/^session:\s*(.+)$/m);
+  const session = sessionLine ? sessionLine[1].trim() : null;
+
+  let sessionWasAlive = false;
+  if (session) {
+    try {
+      execSync(`tmux has-session -t "${session}" 2>/dev/null`);
+      sessionWasAlive = true;
+      execSync(`tmux kill-session -t "${session}"`);
+    } catch {
+      // No session — agents already finished or were never alive in this
+      // server's lifetime. Still safe to mark cleaned below.
+    }
+  }
+
+  markRunCleanedFromCore(projectPath, runId);
+
+  // Remove the active-run pointer if it points at this run. (If a newer
+  // run has started since, leave it alone.)
+  const activeFile = join(projectPath, '.dmux', 'active_run');
+  if (existsSync(activeFile)) {
+    const active = readFileSync(activeFile, 'utf-8').trim();
+    if (active === runId) {
+      try { execSync(`rm -f "${activeFile}"`); } catch { /* ignore */ }
+    }
+  }
+
+  return { ok: true, sessionWasAlive };
+}
+
 export async function readAgentDiff(projectPath, runId, agentName) {
   const { parseAgentsConfig } = await import('../../../dmux-core/src/config.js');
   const run = readRunFromCore(projectPath, runId);

@@ -3,6 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import Card, { CardTitle } from '../components/Card';
 import Disclosure from '../components/Disclosure';
 import Button from '../components/Button';
+import { ConfirmDialog } from '../components/Sheet';
+import { useToast } from '../components/Toasts';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -33,8 +35,11 @@ const STATUS_GLYPH = {
  */
 export default function RunDetail() {
   const { name, runId } = useParams();
+  const toast = useToast();
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const fetchRun = () => {
     fetch(`/api/projects/${name}/runs/${runId}`)
@@ -99,11 +104,41 @@ export default function RunDetail() {
           </div>
         </div>
         {run.status === 'running' && (
-          <Button variant="secondary" to={`/projects/${name}/agents`}>
-            Open terminals →
-          </Button>
+          <div className={styles.headerActions}>
+            <Button variant="secondary" to={`/projects/${name}/agents`}>
+              Open terminals →
+            </Button>
+            <Button variant="danger" onClick={() => setConfirmStop(true)}>
+              Stop run
+            </Button>
+          </div>
         )}
       </header>
+
+      <ConfirmDialog
+        open={confirmStop}
+        onClose={() => !stopping && setConfirmStop(false)}
+        onConfirm={async () => {
+          setStopping(true);
+          try {
+            const res = await fetch(`/api/projects/${name}/runs/${runId}/stop`, { method: 'POST' });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+            toast(body.sessionWasAlive ? 'Run stopped.' : 'Run marked cleaned.', 'success');
+            setConfirmStop(false);
+            fetchRun();
+          } catch (e) {
+            toast(`Couldn't stop run: ${e.message}`, 'error');
+          } finally {
+            setStopping(false);
+          }
+        }}
+        title="Stop run?"
+        message="Agents will be terminated. Worktrees stay until you clean them up. This can't be undone."
+        confirmLabel="Stop run"
+        confirmVariant="danger"
+        busy={stopping}
+      />
 
       <Card header={<CardTitle>Agents</CardTitle>}>
         <table className={styles.table}>

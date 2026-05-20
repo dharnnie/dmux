@@ -7,6 +7,7 @@ import Card, { CardTitle } from '../components/Card';
 import Button from '../components/Button';
 import Disclosure from '../components/Disclosure';
 import RunCard from '../components/RunCard';
+import { ConfirmDialog } from '../components/Sheet';
 import { useToast } from '../components/Toasts';
 import styles from './ProjectDetail.module.css';
 
@@ -19,6 +20,8 @@ export default function ProjectDetail() {
   const [hasConfig, setHasConfig] = useState(false);
   const [agentCount, setAgentCount] = useState(null);
   const [runs, setRuns] = useState(null); // null = loading, [] = no runs
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   // Quick Launch (legacy tmux pane spawn — demoted to Settings)
   const [panes, setPanes] = useState(2);
@@ -102,13 +105,19 @@ export default function ProjectDetail() {
       .catch((e) => toast(e.message, 'error'));
   };
 
-  const handleDelete = () => {
-    // TODO: replace window.confirm with a Sheet[dialog] confirmation in a
-    // future PR (Section 5 Wave 1 fix #3).
-    if (!confirm(`Remove project "${name}" from dmux?`)) return;
-    fetch(`/api/projects/${name}`, { method: 'DELETE' })
-      .then((r) => r.json())
-      .then(() => navigate('/'));
+  const handleRemoveConfirmed = async () => {
+    setRemoving(true);
+    try {
+      const r = await fetch(`/api/projects/${name}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${r.status}`);
+      }
+      navigate('/projects');
+    } catch (e) {
+      toast(`Couldn't remove project: ${e.message}`, 'error');
+      setRemoving(false);
+    }
   };
 
   if (!project) {
@@ -245,13 +254,24 @@ export default function ProjectDetail() {
                   Removes this project from dmux's registry. Files on disk are untouched.
                 </div>
               </div>
-              <Button variant="danger" size="sm" onClick={handleDelete}>
+              <Button variant="danger" size="sm" onClick={() => setConfirmRemove(true)}>
                 Remove project
               </Button>
             </div>
           </div>
         </Disclosure>
       </div>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onClose={() => !removing && setConfirmRemove(false)}
+        onConfirm={handleRemoveConfirmed}
+        title={`Remove ${name} from dmux?`}
+        message="This only removes the project from dmux's registry. Files on disk are untouched."
+        confirmLabel="Remove project"
+        confirmVariant="danger"
+        busy={removing}
+      />
     </div>
   );
 }

@@ -370,25 +370,50 @@ EOF
   fi
 }
 
-# Strip inline YAML comments (# ...) from a value, preserving # inside quotes
-strip_yaml_comment() {
-  local val="$1"
-  # If value is quoted, strip quotes and return
-  if [[ "$val" =~ ^\"(.*)\"[[:space:]]*(#.*)?$ ]]; then
-    echo "${BASH_REMATCH[1]}"
-    return
+# Cached path to dmux-core (resolved on first use)
+DMUX_CORE_RESOLVED=""
+
+# Resolve the dmux-core install location, populating DMUX_CORE_RESOLVED.
+# Checks (in order): $DMUX_CORE_DIR env, alongside dmux.sh (dev mode),
+# ~/.local/share/dmux/core (installed).
+resolve_dmux_core() {
+  if [[ -n "$DMUX_CORE_RESOLVED" ]]; then
+    return 0
   fi
-  if [[ "$val" =~ ^\'(.*)\'[[:space:]]*(#.*)?$ ]]; then
-    echo "${BASH_REMATCH[1]}"
-    return
+
+  if [[ -n "${DMUX_CORE_DIR:-}" ]]; then
+    if [[ -f "${DMUX_CORE_DIR}/bin/parse-config.js" ]]; then
+      DMUX_CORE_RESOLVED="$DMUX_CORE_DIR"
+      return 0
+    fi
+    echo "Error: DMUX_CORE_DIR='${DMUX_CORE_DIR}' is set but parse-config.js is not at that path." >&2
+    return 1
   fi
-  # Unquoted: strip trailing # comment
-  val="${val%%[[:space:]]#*}"
-  # Trim trailing whitespace
-  val="${val%"${val##*[![:space:]]}"}"
-  echo "$val"
+
+  local script_dir
+  script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || script_dir=""
+  if [[ -n "$script_dir" \
+        && -f "$script_dir/dmux-core/bin/parse-config.js" \
+        && -d "$script_dir/dmux-core/node_modules" ]]; then
+    DMUX_CORE_RESOLVED="$script_dir/dmux-core"
+    return 0
+  fi
+
+  local installed="${HOME}/.local/share/dmux/core"
+  if [[ -f "$installed/bin/parse-config.js" && -d "$installed/node_modules" ]]; then
+    DMUX_CORE_RESOLVED="$installed"
+    return 0
+  fi
+
+  echo "Error: dmux-core is not installed or its dependencies are missing." >&2
+  echo "  Reinstall dmux to fetch dmux-core, or set DMUX_CORE_DIR to a checkout." >&2
+  return 1
 }
 
+# Parse a .dmux-agents.yml file via dmux-core, populating the AGENTS_* globals.
+# dmux-core handles YAML parsing, schema validation, dependency cycle detection,
+# and enum checking. This function only marshals the resulting JSON into the
+# bash arrays the rest of dmux.sh expects.
 parse_agents_config() {
   local config_file="$1"
 
@@ -402,339 +427,80 @@ parse_agents_config() {
   AGENTS_WORKTREE_BASE=".."
   AGENTS_MAIN_PANE="true"
   AGENTS_NOTIFICATIONS="true"
+  AGENTS_NAMESPACE_BRANCHES="false"
+  AGENTS_PROVIDER_DEFAULT="claude"
+  AGENTS_ON_COMPLETE_GLOBAL=""
   AGENTS_NAMES=()
   AGENTS_BRANCHES=()
   AGENTS_TASKS=()
+  AGENTS_ROLES=()
   AGENTS_SCOPES=()
   AGENTS_CONTEXTS=()
-  AGENTS_ROLES=()
   AGENTS_DEPENDS_ON=()
   AGENTS_AUTO_ACCEPT=()
-  AGENTS_ON_COMPLETE=()
-  AGENTS_ON_COMPLETE_GLOBAL=""
-  AGENTS_NAMESPACE_BRANCHES="false"
   AGENTS_PROVIDERS=()
-  AGENTS_PROVIDER_DEFAULT="claude"
+  AGENTS_ON_COMPLETE=()
 
-  local in_agents_list=false
-  local current_name=""
-  local current_branch=""
-  local current_task=""
-  local current_role=""
-  local current_scope=""
-  local current_context=""
-  local in_scope_list=false
-  local in_context_list=false
-  local current_depends_on=""
-  local in_depends_on_list=false
-  local current_auto_accept=""
-  local current_provider=""
-  local current_on_complete=""
-  local in_on_complete_list=false
-  local in_top_on_complete_list=false
-  local last_scalar_field=""
+  require_command "node" "agents config parsing (dmux-core)" || return 1
+  require_command "jq" "agents config parsing" || return 1
+  resolve_dmux_core || return 1
 
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    # Skip comments and empty lines
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ -z "${line// /}" ]] && continue
+  # dmux-core expects the project directory; the config file lives at
+  # <dir>/.dmux-agents.yml.
+  local project_dir
+  project_dir="$(dirname "$config_file")"
 
-    # Detect agent list item start (- name:)
-    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*(.*) ]]; then
-      # Save previous agent if any
-      if [[ -n "$current_name" ]]; then
-        AGENTS_NAMES+=("$current_name")
-        AGENTS_BRANCHES+=("$current_branch")
-        AGENTS_TASKS+=("$current_task")
-        AGENTS_ROLES+=("${current_role:-build}")
-        AGENTS_SCOPES+=("$current_scope")
-        AGENTS_CONTEXTS+=("$current_context")
-        AGENTS_DEPENDS_ON+=("$current_depends_on")
-        AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
-        AGENTS_PROVIDERS+=("$current_provider")
-        AGENTS_ON_COMPLETE+=("$current_on_complete")
-      fi
-      current_name=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      current_name="${current_name#"${current_name%%[![:space:]]*}"}"
-      current_name="${current_name%"${current_name##*[![:space:]]}"}"
-      current_branch=""
-      current_task=""
-      current_role=""
-      current_scope=""
-      current_context=""
-      current_depends_on=""
-      current_auto_accept=""
-      current_provider=""
-      current_on_complete=""
-      in_scope_list=false
-      in_context_list=false
-      in_depends_on_list=false
-      in_on_complete_list=false
-      last_scalar_field=""
-      in_agents_list=true
-      continue
-    fi
-
-    # Inside an agent entry — parse branch, task, role, scope, context
-    if $in_agents_list; then
-      # List items under scope: or context:
-      if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+(.*) ]]; then
-        local item
-        item=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        item="${item#"${item%%[![:space:]]*}"}"
-        item="${item%"${item##*[![:space:]]}"}"
-        if $in_scope_list; then
-          if [[ -n "$current_scope" ]]; then
-            current_scope+=",${item}"
-          else
-            current_scope="$item"
-          fi
-          continue
-        fi
-        if $in_context_list; then
-          if [[ -n "$current_context" ]]; then
-            current_context+=",${item}"
-          else
-            current_context="$item"
-          fi
-          continue
-        fi
-        if $in_depends_on_list; then
-          if [[ -n "$current_depends_on" ]]; then
-            current_depends_on+=",${item}"
-          else
-            current_depends_on="$item"
-          fi
-          continue
-        fi
-        if $in_on_complete_list; then
-          if [[ -n "$current_on_complete" ]]; then
-            current_on_complete+=",${item}"
-          else
-            current_on_complete="$item"
-          fi
-          continue
-        fi
-      fi
-
-      # Any non-list-item line resets sub-list flags
-      in_scope_list=false
-      in_context_list=false
-      in_depends_on_list=false
-      in_on_complete_list=false
-
-      if [[ "$line" =~ ^[[:space:]]+branch:[[:space:]]*(.*) ]]; then
-        current_branch=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        current_branch="${current_branch#"${current_branch%%[![:space:]]*}"}"
-        current_branch="${current_branch%"${current_branch##*[![:space:]]}"}"
-        last_scalar_field="branch"
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+task:[[:space:]]*(.*) ]]; then
-        current_task=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        current_task="${current_task#"${current_task%%[![:space:]]*}"}"
-        current_task="${current_task%"${current_task##*[![:space:]]}"}"
-        last_scalar_field="task"
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+role:[[:space:]]*(.*) ]]; then
-        current_role=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        current_role="${current_role#"${current_role%%[![:space:]]*}"}"
-        current_role="${current_role%"${current_role##*[![:space:]]}"}"
-        last_scalar_field="role"
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+auto_accept:[[:space:]]*(.*) ]]; then
-        current_auto_accept=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        current_auto_accept="${current_auto_accept#"${current_auto_accept%%[![:space:]]*}"}"
-        current_auto_accept="${current_auto_accept%"${current_auto_accept##*[![:space:]]}"}"
-        last_scalar_field="auto_accept"
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+provider:[[:space:]]*(.*) ]]; then
-        current_provider=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        current_provider="${current_provider#"${current_provider%%[![:space:]]*}"}"
-        current_provider="${current_provider%"${current_provider##*[![:space:]]}"}"
-        last_scalar_field="provider"
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+scope:[[:space:]]*$ ]]; then
-        in_scope_list=true
-        last_scalar_field=""
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+context:[[:space:]]*$ ]]; then
-        in_context_list=true
-        last_scalar_field=""
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+depends_on:[[:space:]]*$ ]]; then
-        in_depends_on_list=true
-        last_scalar_field=""
-        continue
-      fi
-      if [[ "$line" =~ ^[[:space:]]+on_complete:[[:space:]]*$ ]]; then
-        in_on_complete_list=true
-        last_scalar_field=""
-        continue
-      fi
-
-      # Multi-line scalar continuation: indented line that didn't match any key
-      if [[ -n "$last_scalar_field" && "$line" =~ ^[[:space:]]+(.*) ]]; then
-        local cont
-        cont="${BASH_REMATCH[1]}"
-        cont="${cont#"${cont%%[![:space:]]*}"}"
-        cont="${cont%"${cont##*[![:space:]]}"}"
-        if [[ -n "$cont" ]]; then
-          case "$last_scalar_field" in
-            task) current_task+=" $cont" ;;
-            branch) current_branch+=" $cont" ;;
-            role) current_role+=" $cont" ;;
-            auto_accept) current_auto_accept+=" $cont" ;;
-            provider) current_provider+=" $cont" ;;
-          esac
-        fi
-        continue
-      fi
-    fi
-
-    # Top-level keys
-    if [[ "$line" =~ ^session:[[:space:]]*(.*) ]]; then
-      AGENTS_SESSION=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      AGENTS_SESSION="${AGENTS_SESSION#"${AGENTS_SESSION%%[![:space:]]*}"}"
-      AGENTS_SESSION="${AGENTS_SESSION%"${AGENTS_SESSION##*[![:space:]]}"}"
-      in_agents_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^worktree_base:[[:space:]]*(.*) ]]; then
-      AGENTS_WORKTREE_BASE=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      AGENTS_WORKTREE_BASE="${AGENTS_WORKTREE_BASE#"${AGENTS_WORKTREE_BASE%%[![:space:]]*}"}"
-      AGENTS_WORKTREE_BASE="${AGENTS_WORKTREE_BASE%"${AGENTS_WORKTREE_BASE##*[![:space:]]}"}"
-      in_agents_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^main_pane:[[:space:]]*(.*) ]]; then
-      AGENTS_MAIN_PANE=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      AGENTS_MAIN_PANE="${AGENTS_MAIN_PANE#"${AGENTS_MAIN_PANE%%[![:space:]]*}"}"
-      AGENTS_MAIN_PANE="${AGENTS_MAIN_PANE%"${AGENTS_MAIN_PANE##*[![:space:]]}"}"
-      in_agents_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^notifications:[[:space:]]*(.*) ]]; then
-      AGENTS_NOTIFICATIONS=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      AGENTS_NOTIFICATIONS="${AGENTS_NOTIFICATIONS#"${AGENTS_NOTIFICATIONS%%[![:space:]]*}"}"
-      AGENTS_NOTIFICATIONS="${AGENTS_NOTIFICATIONS%"${AGENTS_NOTIFICATIONS##*[![:space:]]}"}"
-      in_agents_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^namespace_branches:[[:space:]]*(.*) ]]; then
-      AGENTS_NAMESPACE_BRANCHES=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      AGENTS_NAMESPACE_BRANCHES="${AGENTS_NAMESPACE_BRANCHES#"${AGENTS_NAMESPACE_BRANCHES%%[![:space:]]*}"}"
-      AGENTS_NAMESPACE_BRANCHES="${AGENTS_NAMESPACE_BRANCHES%"${AGENTS_NAMESPACE_BRANCHES##*[![:space:]]}"}"
-      in_agents_list=false
-      in_top_on_complete_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^provider:[[:space:]]*(.*) ]]; then
-      AGENTS_PROVIDER_DEFAULT=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      AGENTS_PROVIDER_DEFAULT="${AGENTS_PROVIDER_DEFAULT#"${AGENTS_PROVIDER_DEFAULT%%[![:space:]]*}"}"
-      AGENTS_PROVIDER_DEFAULT="${AGENTS_PROVIDER_DEFAULT%"${AGENTS_PROVIDER_DEFAULT##*[![:space:]]}"}"
-      in_agents_list=false
-      in_top_on_complete_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^on_complete:[[:space:]]*$ ]]; then
-      in_top_on_complete_list=true
-      in_agents_list=false
-      continue
-    fi
-    if [[ "$line" =~ ^on_complete:[[:space:]]+(.*) ]]; then
-      # Inline format: on_complete: test, push
-      local val
-      val=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-      val="${val#"${val%%[![:space:]]*}"}"
-      val="${val%"${val##*[![:space:]]}"}"
-      AGENTS_ON_COMPLETE_GLOBAL="${val//[[:space:]]/}"
-      in_agents_list=false
-      in_top_on_complete_list=false
-      continue
-    fi
-    # Top-level on_complete list items
-    if $in_top_on_complete_list; then
-      if [[ "$line" =~ ^[[:space:]]+-[[:space:]]+(.*) ]]; then
-        local item
-        item=$(strip_yaml_comment "${BASH_REMATCH[1]}")
-        item="${item#"${item%%[![:space:]]*}"}"
-        item="${item%"${item##*[![:space:]]}"}"
-        if [[ -n "$AGENTS_ON_COMPLETE_GLOBAL" ]]; then
-          AGENTS_ON_COMPLETE_GLOBAL+=",${item}"
-        else
-          AGENTS_ON_COMPLETE_GLOBAL="$item"
-        fi
-        continue
-      else
-        in_top_on_complete_list=false
-      fi
-    fi
-    if [[ "$line" =~ ^agents:[[:space:]]*$ ]]; then
-      in_agents_list=false
-      in_top_on_complete_list=false
-      continue
-    fi
-  done < "$config_file"
-
-  # Save last agent
-  if [[ -n "$current_name" ]]; then
-    AGENTS_NAMES+=("$current_name")
-    AGENTS_BRANCHES+=("$current_branch")
-    AGENTS_TASKS+=("$current_task")
-    AGENTS_ROLES+=("${current_role:-build}")
-    AGENTS_SCOPES+=("$current_scope")
-    AGENTS_CONTEXTS+=("$current_context")
-    AGENTS_DEPENDS_ON+=("$current_depends_on")
-    AGENTS_AUTO_ACCEPT+=("${current_auto_accept:-false}")
-    AGENTS_PROVIDERS+=("$current_provider")
-    AGENTS_ON_COMPLETE+=("$current_on_complete")
-  fi
-
-  # Validate
-  if [[ -z "$AGENTS_SESSION" ]]; then
-    echo "Error: 'session' is required in config file"
+  local err_file
+  err_file="$(mktemp -t dmux-core-err.XXXXXX)"
+  local json
+  if ! json="$(node "$DMUX_CORE_RESOLVED/bin/parse-config.js" "$project_dir" 2>"$err_file")"; then
+    echo "Error parsing $config_file:"
+    cat "$err_file"
+    rm -f "$err_file"
     return 1
   fi
-  if [[ ${#AGENTS_NAMES[@]} -eq 0 ]]; then
-    echo "Error: No agents defined in config file"
-    return 1
-  fi
+  rm -f "$err_file"
 
-  # Validate depends_on references
-  local count=${#AGENTS_NAMES[@]}
+  # Top-level fields
+  AGENTS_SESSION=$(echo "$json" | jq -r '.session')
+  AGENTS_WORKTREE_BASE=$(echo "$json" | jq -r '.worktree_base')
+  AGENTS_MAIN_PANE=$(echo "$json" | jq -r '.main_pane | tostring')
+  AGENTS_NAMESPACE_BRANCHES=$(echo "$json" | jq -r '.namespace_branches | tostring')
+  AGENTS_NOTIFICATIONS=$(echo "$json" | jq -r '.notifications | tostring')
+  AGENTS_PROVIDER_DEFAULT=$(echo "$json" | jq -r '.provider')
+  AGENTS_ON_COMPLETE_GLOBAL=$(echo "$json" | jq -r '.on_complete | join(",")')
+
+  # Per-agent fields
+  local count
+  count=$(echo "$json" | jq '.agents | length')
+
+  local i
   for ((i=0; i<count; i++)); do
-    local deps="${AGENTS_DEPENDS_ON[$i]}"
-    [[ -z "$deps" ]] && continue
-    IFS=',' read -ra dep_arr <<< "$deps"
-    for dep in "${dep_arr[@]}"; do
-      if [[ "$dep" == "${AGENTS_NAMES[$i]}" ]]; then
-        echo "Error: Agent '${AGENTS_NAMES[$i]}' cannot depend on itself"
-        return 1
-      fi
-      local found=false
-      for name in "${AGENTS_NAMES[@]}"; do
-        [[ "$name" == "$dep" ]] && found=true && break
-      done
-      if ! $found; then
-        echo "Error: Agent '${AGENTS_NAMES[$i]}' depends on unknown agent '$dep'"
-        return 1
-      fi
-    done
+    AGENTS_NAMES+=("$(echo "$json" | jq -r ".agents[$i].name")")
+    AGENTS_BRANCHES+=("$(echo "$json" | jq -r ".agents[$i].branch")")
+    AGENTS_TASKS+=("$(echo "$json" | jq -r ".agents[$i].task")")
+    AGENTS_ROLES+=("$(echo "$json" | jq -r ".agents[$i].role")")
+    AGENTS_SCOPES+=("$(echo "$json" | jq -r ".agents[$i].scope | join(\",\")")")
+    AGENTS_CONTEXTS+=("$(echo "$json" | jq -r ".agents[$i].context | join(\",\")")")
+    AGENTS_DEPENDS_ON+=("$(echo "$json" | jq -r ".agents[$i].depends_on | join(\",\")")")
+    AGENTS_AUTO_ACCEPT+=("$(echo "$json" | jq -r ".agents[$i].auto_accept | tostring")")
+    AGENTS_PROVIDERS+=("$(echo "$json" | jq -r ".agents[$i].provider // \"\"")")
+    AGENTS_ON_COMPLETE+=("$(echo "$json" | jq -r ".agents[$i].on_complete | if . == null then \"\" else join(\",\") end")")
   done
 
-  # Validate provider values
-  # Resolve empty per-agent providers to the top-level default
+  # Resolve empty per-agent providers to the top-level default. dmux-core
+  # leaves provider=null when inherit-global; the bash side prefers a
+  # concrete string everywhere it's read.
   for ((i=0; i<count; i++)); do
     if [[ -z "${AGENTS_PROVIDERS[$i]}" ]]; then
       AGENTS_PROVIDERS[$i]="$AGENTS_PROVIDER_DEFAULT"
     fi
+  done
+
+  # Belt-and-suspenders: verify each resolved provider is in dmux's bash-side
+  # registry (provider_binary). dmux-core already validated against
+  # {claude, gemini}; this catches future divergence between the two sides.
+  for ((i=0; i<count; i++)); do
     if ! provider_binary "${AGENTS_PROVIDERS[$i]}" >/dev/null 2>&1; then
       echo "Error: Agent '${AGENTS_NAMES[$i]}' has unknown provider '${AGENTS_PROVIDERS[$i]}'"
       echo "  Supported providers: claude, gemini"
@@ -744,7 +510,6 @@ parse_agents_config() {
 
   return 0
 }
-
 # ------------------------------------------------------------------------------
 # TERMINAL LAUNCHERS
 # ------------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import Disclosure from '../components/Disclosure';
 import Button from '../components/Button';
 import Checkbox from '../components/Checkbox';
 import { Input } from '../components/Field';
+import { ConfirmDialog } from '../components/Sheet';
 import { useToast } from '../components/Toasts';
 import styles from './AgentSession.module.css';
 
@@ -166,6 +167,7 @@ export default function AgentSession() {
   const [isRunning, setIsRunning] = useState(false);
   const [validationError, setValidationError] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const agentStatus = useAgentStatus(name);
 
   useEffect(() => {
@@ -225,9 +227,13 @@ export default function AgentSession() {
 
   const handleDiscard = () => {
     if (!dirty) return;
-    if (!confirm('Discard all unsaved changes?')) return;
+    setConfirmDiscard(true);
+  };
+
+  const confirmDiscardChanges = () => {
     setConfig(saved);
     setValidationError(null);
+    setConfirmDiscard(false);
   };
 
   const save = async ({ andRun = false } = {}) => {
@@ -468,6 +474,16 @@ export default function AgentSession() {
           Save & Run
         </Button>
       </div>
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        onClose={() => setConfirmDiscard(false)}
+        onConfirm={confirmDiscardChanges}
+        title="Discard changes?"
+        message="All unsaved edits to this config will be lost."
+        confirmLabel="Discard changes"
+        confirmVariant="danger"
+      />
     </div>
   );
 }

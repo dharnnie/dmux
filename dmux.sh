@@ -96,6 +96,7 @@ AGENTS_ON_COMPLETE_GLOBAL="" # top-level on_complete default
 AGENTS_NAMESPACE_BRANCHES="false"
 AGENTS_PROVIDERS=()              # per-agent provider (claude, gemini, etc.)
 AGENTS_PROVIDER_DEFAULT="claude" # top-level default provider
+AGENTS_MODELS=()                 # per-agent model alias (opus/sonnet/haiku/pro/flash) or empty
 
 # Slugify a string: lowercase, replace non-alnum with hyphens, collapse, trim
 slugify() {
@@ -439,6 +440,7 @@ parse_agents_config() {
   AGENTS_DEPENDS_ON=()
   AGENTS_AUTO_ACCEPT=()
   AGENTS_PROVIDERS=()
+  AGENTS_MODELS=()
   AGENTS_ON_COMPLETE=()
 
   require_command "node" "agents config parsing (dmux-core)" || return 1
@@ -485,6 +487,7 @@ parse_agents_config() {
     AGENTS_DEPENDS_ON+=("$(echo "$json" | jq -r ".agents[$i].depends_on | join(\",\")")")
     AGENTS_AUTO_ACCEPT+=("$(echo "$json" | jq -r ".agents[$i].auto_accept | tostring")")
     AGENTS_PROVIDERS+=("$(echo "$json" | jq -r ".agents[$i].provider // \"\"")")
+    AGENTS_MODELS+=("$(echo "$json" | jq -r ".agents[$i].model // \"\"")")
     AGENTS_ON_COMPLETE+=("$(echo "$json" | jq -r ".agents[$i].on_complete | if . == null then \"\" else join(\",\") end")")
   done
 
@@ -1406,6 +1409,12 @@ agents_start() {
     agent_cmd=$(provider_binary "$agent_provider")
     if [[ "${AGENTS_AUTO_ACCEPT[$i]}" == "true" ]]; then
       agent_cmd+=" $(provider_auto_accept_flag "$agent_provider")"
+    fi
+    # Both claude and gemini CLIs accept --model <alias>. Empty model =
+    # use the provider's default.
+    local agent_model="${AGENTS_MODELS[$i]:-}"
+    if [[ -n "$agent_model" ]]; then
+      agent_cmd+=" --model $agent_model"
     fi
 
     # Build per-agent notification commands (empty when notifications disabled)

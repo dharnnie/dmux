@@ -28,6 +28,7 @@ This package replaces the duplicate YAML parsers that existed in Wave 1 — one 
       branch: string,                       // empty string if unset
       task: string,
       provider: 'claude' | 'gemini' | null, // null = inherit global
+      model: string | null,                 // null = use provider's default
       auto_accept: boolean,                 // default false
       scope: string[],
       context: string[],
@@ -37,6 +38,15 @@ This package replaces the duplicate YAML parsers that existed in Wave 1 — one 
     ...
   ]
 }
+```
+
+`model` is validated against the agent's resolved provider (its own
+`provider` if set, else the top-level `provider`, defaulting to `claude`).
+Valid models are exported as `MODELS_BY_PROVIDER`:
+
+```js
+import { MODELS_BY_PROVIDER } from 'dmux-core';
+// { claude: ['opus', 'sonnet', 'haiku'], gemini: ['pro', 'flash'] }
 ```
 
 Keys are snake_case throughout to match the YAML and the bash side. No JS-flavored camelCase translation layer.

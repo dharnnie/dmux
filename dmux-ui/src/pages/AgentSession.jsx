@@ -1,161 +1,196 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import AgentForm from '../components/AgentForm';
-import YamlPreview from '../components/YamlPreview';
-import StatusTable from '../components/StatusTable';
 import useAgentStatus from '../hooks/useAgentStatus';
+import StatusTable from '../components/StatusTable';
+import AgentCardEditor from '../components/AgentCardEditor';
+import Card, { CardTitle } from '../components/Card';
+import Disclosure from '../components/Disclosure';
+import Button from '../components/Button';
+import Checkbox from '../components/Checkbox';
+import { Input } from '../components/Field';
+import { useToast } from '../components/Toasts';
 import styles from './AgentSession.module.css';
 
-const DEFAULT_CONFIG = {
+// ---------------- shape + serialization ----------------
+
+const EMPTY_AGENT = () => ({
+  name: '',
+  branch: '',
+  task: '',
+  role: 'build',
+  provider: '',
+  model: '',
+  auto_accept: false,
+  depends_on: [],
+  scope: [],
+  context: [],
+  on_complete: { test: false, push: false, pr: false },
+});
+
+const DEFAULT_CONFIG = () => ({
   session: '',
   worktree_base: '..',
   main_pane: true,
   namespace_branches: false,
+  provider: 'claude',
   on_complete: { test: false, push: false, pr: false },
   agents: [],
-};
+});
 
-function configToYaml(config) {
-  let yaml = `session: ${config.session || 'my-agents'}\n`;
-  yaml += `worktree_base: ${config.worktree_base || '..'}\n`;
-  yaml += `main_pane: ${config.main_pane}\n`;
-
-  if (config.namespace_branches) {
-    yaml += `namespace_branches: true\n`;
-  }
-
-  const globalOc = [];
-  if (config.on_complete.test) globalOc.push('test');
-  if (config.on_complete.push) globalOc.push('push');
-  if (config.on_complete.pr) globalOc.push('pr');
-  if (globalOc.length > 0) {
-    yaml += `on_complete:\n`;
-    for (const item of globalOc) {
-      yaml += `  - ${item}\n`;
-    }
-  }
-
-  yaml += `\nagents:\n`;
-
-  for (const agent of config.agents) {
-    if (!agent.name) continue;
-    yaml += `  - name: ${agent.name}\n`;
-    if (agent.role === 'review') {
-      yaml += `    role: review\n`;
-    } else if (agent.branch) {
-      yaml += `    branch: ${agent.branch}\n`;
-    }
-    if (agent.task) {
-      yaml += `    task: "${agent.task}"\n`;
-    }
-    if (agent.auto_accept) {
-      yaml += `    auto_accept: true\n`;
-    }
-    if (agent.depends_on) {
-      yaml += `    depends_on:\n`;
-      for (const dep of agent.depends_on.split(',').map((d) => d.trim()).filter(Boolean)) {
-        yaml += `      - ${dep}\n`;
-      }
-    }
-    if (agent.scope) {
-      yaml += `    scope:\n`;
-      for (const s of agent.scope.split(',').map((d) => d.trim()).filter(Boolean)) {
-        yaml += `      - ${s}\n`;
-      }
-    }
-    if (agent.context) {
-      yaml += `    context:\n`;
-      for (const c of agent.context.split(',').map((d) => d.trim()).filter(Boolean)) {
-        yaml += `      - ${c}\n`;
-      }
-    }
-
-    const oc = [];
-    if (agent.on_complete.test) oc.push('test');
-    if (agent.on_complete.push) oc.push('push');
-    if (agent.on_complete.pr) oc.push('pr');
-    if (oc.length > 0) {
-      yaml += `    on_complete:\n`;
-      for (const item of oc) {
-        yaml += `      - ${item}\n`;
-      }
-    }
-  }
-
-  return yaml;
+function ocObjToList(o) {
+  const list = [];
+  if (o?.test) list.push('test');
+  if (o?.push) list.push('push');
+  if (o?.pr) list.push('pr');
+  return list;
 }
 
-// Adapts the normalized config from dmux-core's parser into the local form-state
-// shape this component currently uses (comma-separated strings for path lists,
-// object form for on_complete). This is a transitional shim — the agent editor
-// refactor in Wave 2A replaces the form internals with real list editors and
-// removes this adapter.
-function parsedConfigToFormState(parsed) {
-  const oncListToObj = (list) => ({
-    test: list.includes('test'),
-    push: list.includes('push'),
-    pr: list.includes('pr'),
-  });
+function ocListToObj(list) {
+  return {
+    test: list?.includes('test') ?? false,
+    push: list?.includes('push') ?? false,
+    pr: list?.includes('pr') ?? false,
+  };
+}
 
+function configToYaml(c) {
+  let y = `session: ${c.session || 'my-agents'}\n`;
+  y += `worktree_base: ${c.worktree_base || '..'}\n`;
+  y += `main_pane: ${c.main_pane}\n`;
+  if (c.namespace_branches) y += `namespace_branches: true\n`;
+  if (c.provider && c.provider !== 'claude') y += `provider: ${c.provider}\n`;
+
+  const globalOc = ocObjToList(c.on_complete);
+  if (globalOc.length > 0) {
+    y += `on_complete:\n`;
+    for (const item of globalOc) y += `  - ${item}\n`;
+  }
+
+  y += `\nagents:\n`;
+  for (const a of c.agents) {
+    if (!a.name) continue;
+    y += `  - name: ${a.name}\n`;
+    if (a.role !== 'build') y += `    role: ${a.role}\n`;
+    if (a.role === 'build' && a.branch) y += `    branch: ${a.branch}\n`;
+    if (a.task) y += `    task: ${JSON.stringify(a.task)}\n`;
+    if (a.provider) y += `    provider: ${a.provider}\n`;
+    if (a.model) y += `    model: ${a.model}\n`;
+    if (a.auto_accept) y += `    auto_accept: true\n`;
+    if (a.depends_on?.length > 0) {
+      y += `    depends_on:\n`;
+      for (const d of a.depends_on) y += `      - ${d}\n`;
+    }
+    if (a.scope?.length > 0) {
+      y += `    scope:\n`;
+      for (const s of a.scope) y += `      - ${s}\n`;
+    }
+    if (a.context?.length > 0) {
+      y += `    context:\n`;
+      for (const ctx of a.context) y += `      - ${ctx}\n`;
+    }
+    const oc = ocObjToList(a.on_complete);
+    if (oc.length > 0) {
+      y += `    on_complete:\n`;
+      for (const item of oc) y += `      - ${item}\n`;
+    }
+  }
+  return y;
+}
+
+function parsedConfigToFormState(parsed) {
   return {
     session: parsed.session,
     worktree_base: parsed.worktree_base,
     main_pane: parsed.main_pane,
     namespace_branches: parsed.namespace_branches,
-    on_complete: oncListToObj(parsed.on_complete),
+    provider: parsed.provider || 'claude',
+    on_complete: ocListToObj(parsed.on_complete),
     agents: parsed.agents.map((a) => ({
       name: a.name,
-      branch: a.branch,
-      task: a.task,
+      branch: a.branch || '',
+      task: a.task || '',
       role: a.role,
+      provider: a.provider || '',
+      model: a.model || '',
       auto_accept: a.auto_accept,
-      depends_on: a.depends_on.join(', '),
-      scope: a.scope.join(', '),
-      context: a.context.join(', '),
-      // null on the parsed side means "inherit global"; the form represents that
-      // as all-false. Wave 2A's editor refactor will surface inheritance properly.
-      on_complete: oncListToObj(a.on_complete ?? []),
+      depends_on: a.depends_on ?? [],
+      scope: a.scope ?? [],
+      context: a.context ?? [],
+      // null on the parsed side = inherit; render as all-false
+      on_complete: ocListToObj(a.on_complete ?? []),
     })),
   };
 }
 
+// ---------------- dependency layers ----------------
+
+function computeLayers(agents) {
+  const names = new Set(agents.map((a) => a.name).filter(Boolean));
+  const depMap = new Map(
+    agents.map((a) => [a.name, (a.depends_on ?? []).filter((d) => names.has(d))]),
+  );
+  const depth = new Map();
+
+  const getDepth = (name, stack = new Set()) => {
+    if (depth.has(name)) return depth.get(name);
+    if (stack.has(name)) return 0; // cycle protection — surface as layer 0
+    stack.add(name);
+    const deps = depMap.get(name) ?? [];
+    const d = deps.length === 0 ? 0 : Math.max(...deps.map((dep) => getDepth(dep, stack) + 1));
+    depth.set(name, d);
+    stack.delete(name);
+    return d;
+  };
+
+  agents.forEach((a) => a.name && getDepth(a.name));
+
+  const grouped = new Map();
+  agents.forEach((a) => {
+    if (!a.name) return;
+    const d = depth.get(a.name) ?? 0;
+    if (!grouped.has(d)) grouped.set(d, []);
+    grouped.get(d).push(a);
+  });
+
+  return [...grouped.entries()].sort(([a], [b]) => a - b).map(([d, list]) => ({ depth: d, agents: list }));
+}
+
+// ---------------- the page ----------------
+
 export default function AgentSession() {
   const { name } = useParams();
+  const toast = useToast();
   const [config, setConfig] = useState(DEFAULT_CONFIG);
-  const [message, setMessage] = useState('');
+  const [saved, setSaved] = useState(DEFAULT_CONFIG); // last-saved snapshot for Discard
+  const [showYaml, setShowYaml] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [validationError, setValidationError] = useState(null);
+  const [saving, setSaving] = useState(false);
   const agentStatus = useAgentStatus(name);
 
   useEffect(() => {
-    // Load existing config via the dmux-core-backed parsed endpoint.
-    // The endpoint returns 404 if no .dmux-agents.yml exists, 422 with
-    // {error, field, agent} on validation failures, or 200 with the normalized
-    // config object.
     fetch(`/api/projects/${name}/agents-config-parsed`)
       .then(async (r) => {
         if (r.ok) {
           const parsed = await r.json();
-          setConfig(parsedConfigToFormState(parsed));
+          const form = parsedConfigToFormState(parsed);
+          setConfig(form);
+          setSaved(form);
           return;
         }
         if (r.status === 404) {
-          setConfig({
-            ...DEFAULT_CONFIG,
-            session: `${name}-agents`,
-            on_complete: { ...DEFAULT_CONFIG.on_complete },
-            agents: [],
-          });
+          const fresh = { ...DEFAULT_CONFIG(), session: `${name}-agents` };
+          setConfig(fresh);
+          setSaved(fresh);
           return;
         }
         if (r.status === 422) {
           const body = await r.json();
-          const where = body.agent ? `agent '${body.agent}': ` : '';
-          setMessage(`Config invalid — ${where}${body.error}`);
+          setValidationError({ ...body, scope: 'load' });
         }
       })
-      .catch((e) => setMessage(`Couldn't load config: ${e.message}`));
+      .catch((e) => toast(`Couldn't load config: ${e.message}`, 'error'));
 
-    // Check if agents are running
     fetch(`/api/projects/${name}/agents/status`)
       .then((r) => r.json())
       .then((data) => {
@@ -167,99 +202,272 @@ export default function AgentSession() {
   }, [name]);
 
   const yaml = useMemo(() => configToYaml(config), [config]);
+  const layers = useMemo(() => computeLayers(config.agents), [config.agents]);
+  const dirty = useMemo(() => JSON.stringify(config) !== JSON.stringify(saved), [config, saved]);
+  const agentNames = useMemo(() => config.agents.map((a) => a.name), [config.agents]);
 
-  const handleSave = () => {
-    setMessage('Saving...');
-    fetch(`/api/projects/${name}/agents-config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'text/plain' },
-      body: yaml,
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        setMessage(data.ok ? 'Config saved.' : `Error: ${data.error}`);
-      })
-      .catch((e) => setMessage(`Error: ${e.message}`));
+  // ---------------- handlers ----------------
+
+  const updateAgent = (idx, next) => {
+    const agents = [...config.agents];
+    agents[idx] = next;
+    setConfig({ ...config, agents });
   };
 
-  const handleSaveAndStart = () => {
-    setMessage('Saving and starting agents...');
-    fetch(`/api/projects/${name}/agents-config`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'text/plain' },
-      body: yaml,
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (!data.ok) {
-          setMessage(`Error saving: ${data.error}`);
-          return;
+  const addAgent = () => {
+    setConfig({ ...config, agents: [...config.agents, EMPTY_AGENT()] });
+  };
+
+  const removeAgent = (idx) => {
+    const agents = config.agents.filter((_, i) => i !== idx);
+    setConfig({ ...config, agents });
+  };
+
+  const handleDiscard = () => {
+    if (!dirty) return;
+    if (!confirm('Discard all unsaved changes?')) return;
+    setConfig(saved);
+    setValidationError(null);
+  };
+
+  const save = async ({ andRun = false } = {}) => {
+    setSaving(true);
+    setValidationError(null);
+    try {
+      const writeRes = await fetch(`/api/projects/${name}/agents-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'text/plain' },
+        body: yaml,
+      });
+      const writeData = await writeRes.json();
+      if (!writeData.ok) throw new Error(writeData.error || 'Save failed');
+
+      // Re-parse to validate via dmux-core (catches cycles, unknown deps, etc.)
+      const parseRes = await fetch(`/api/projects/${name}/agents-config-parsed`);
+      if (parseRes.status === 422) {
+        const body = await parseRes.json();
+        setValidationError({ ...body, scope: 'save' });
+        toast(`Config saved but has errors: ${body.error}`, 'warning');
+        setSaving(false);
+        return;
+      }
+
+      setSaved(config);
+      toast(andRun ? 'Saved. Starting agents...' : 'Config saved', 'success');
+
+      if (andRun) {
+        const startRes = await fetch(`/api/projects/${name}/agents/start`, { method: 'POST' });
+        const startData = await startRes.json();
+        if (startData.ok) {
+          toast('Run started', 'success');
+          setIsRunning(true);
+        } else {
+          toast(startData.error || 'Failed to start agents', 'error');
         }
-        return fetch(`/api/projects/${name}/agents/start`, { method: 'POST' });
-      })
-      .then((r) => r && r.json())
-      .then((data) => {
-        if (data) {
-          setMessage(data.ok ? 'Agents started! Check your terminal.' : `Error: ${data.error}`);
-          if (data.ok) setIsRunning(true);
-        }
-      })
-      .catch((e) => setMessage(`Error: ${e.message}`));
+      }
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleCleanup = () => {
-    setMessage('Cleaning up...');
     fetch(`/api/projects/${name}/agents/cleanup`, { method: 'POST' })
       .then((r) => r.json())
       .then((data) => {
-        setMessage(data.ok ? 'Cleanup complete.' : `Error: ${data.error}`);
+        toast(data.ok ? 'Cleanup complete' : data.error || 'Cleanup failed', data.ok ? 'success' : 'error');
         if (data.ok) setIsRunning(false);
       })
-      .catch((e) => setMessage(`Error: ${e.message}`));
+      .catch((e) => toast(e.message, 'error'));
   };
+
+  // ---------------- render ----------------
+
+  if (isRunning) {
+    return (
+      <div className={styles.page}>
+        <Link to={`/projects/${name}`} className={styles.backLink}>
+          ← {name}
+        </Link>
+        <header className={styles.header}>
+          <h1 className={styles.title}>Agent run in progress</h1>
+          <div className={styles.subtitle}>{name}</div>
+        </header>
+        <StatusTable {...agentStatus} />
+        <div className={styles.bottomBar}>
+          <Button variant="secondary" onClick={handleCleanup}>
+            Cleanup
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.page}>
       <Link to={`/projects/${name}`} className={styles.backLink}>
-        &#8592; {name}
+        ← {name}
       </Link>
 
-      <div className={styles.header}>
-        <h1 className={styles.title}>Agent Configuration</h1>
-        <div className={styles.subtitle}>{name}</div>
-      </div>
+      <header className={styles.header}>
+        <div>
+          <h1 className={styles.title}>Agent Configuration</h1>
+          <div className={styles.subtitle}>{name}</div>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => setShowYaml((v) => !v)}>
+          {showYaml ? 'Hide YAML' : 'Show YAML'}
+        </Button>
+      </header>
 
-      {isRunning ? (
-        <>
-          <StatusTable {...agentStatus} />
-          <div className={styles.bottomBar}>
-            <button className={styles.btnOutline} onClick={handleCleanup}>
-              Cleanup
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className={styles.layout}>
-            <div className={styles.formPanel}>
-              <AgentForm config={config} onChange={setConfig} />
-              <div className={styles.bottomBar}>
-                <button className={styles.btnOutline} onClick={handleSave}>
-                  Save Config
-                </button>
-                <button className={styles.btnPink} onClick={handleSaveAndStart}>
-                  Save & Start
-                </button>
-              </div>
-            </div>
-            <div className={styles.previewPanel}>
-              <YamlPreview yaml={yaml} />
-            </div>
-          </div>
-        </>
+      {validationError && validationError.scope === 'load' && (
+        <div className={styles.banner} role="alert">
+          <strong>Loaded config has errors.</strong>{' '}
+          {validationError.agent ? `Agent '${validationError.agent}': ` : ''}
+          {validationError.error}
+        </div>
       )}
 
-      {message && <div className={styles.message}>{message}</div>}
+      <div className={styles.sections}>
+        <Card header={<CardTitle>Session</CardTitle>}>
+          <div className={styles.sessionGrid}>
+            <Input
+              label="Session name"
+              value={config.session}
+              onChange={(e) => setConfig({ ...config, session: e.target.value })}
+              placeholder="my-project-agents"
+              helperText="Used by tmux as the session name."
+              required
+            />
+            <Input
+              label="Worktree base"
+              value={config.worktree_base}
+              onChange={(e) => setConfig({ ...config, worktree_base: e.target.value })}
+              placeholder=".."
+              helperText="Where per-agent git worktrees get created, relative to the project."
+            />
+          </div>
+          <div className={styles.checkboxRow}>
+            <Checkbox
+              label="Main integration pane"
+              checked={config.main_pane}
+              onChange={(e) => setConfig({ ...config, main_pane: e.target.checked })}
+            />
+            <Checkbox
+              label="Namespace branches with git username"
+              checked={config.namespace_branches}
+              onChange={(e) => setConfig({ ...config, namespace_branches: e.target.checked })}
+            />
+          </div>
+          <div className={styles.ocBlock}>
+            <span className={styles.ocLabel}>On complete (default for all agents)</span>
+            <div className={styles.ocRow}>
+              <Checkbox
+                label="Test"
+                checked={config.on_complete.test}
+                onChange={(e) =>
+                  setConfig({ ...config, on_complete: { ...config.on_complete, test: e.target.checked } })
+                }
+              />
+              <Checkbox
+                label="Push"
+                checked={config.on_complete.push}
+                onChange={(e) =>
+                  setConfig({ ...config, on_complete: { ...config.on_complete, push: e.target.checked } })
+                }
+              />
+              <Checkbox
+                label="PR"
+                checked={config.on_complete.pr}
+                onChange={(e) =>
+                  setConfig({ ...config, on_complete: { ...config.on_complete, pr: e.target.checked } })
+                }
+              />
+            </div>
+          </div>
+        </Card>
+
+        {layers.length > 0 && (
+          <Card header={<CardTitle>Execution order</CardTitle>}>
+            <ol className={styles.layers}>
+              {layers.map((layer) => (
+                <li key={layer.depth} className={styles.layer}>
+                  <span className={styles.layerNum}>Layer {layer.depth + 1}</span>
+                  <span className={styles.layerNames}>
+                    {layer.agents.map((a, i) => (
+                      <span key={a.name || i} className={styles.layerName}>
+                        {a.name || `(agent ${config.agents.indexOf(a) + 1})`}
+                        <span className={styles.layerRole}>{a.role}</span>
+                      </span>
+                    ))}
+                  </span>
+                </li>
+              ))}
+            </ol>
+            <p className={styles.layersHint}>
+              Agents in the same layer run in parallel. Later layers wait for earlier ones via depends_on.
+            </p>
+          </Card>
+        )}
+
+        <Card header={<CardTitle>Agents ({config.agents.length})</CardTitle>}>
+          {config.agents.length === 0 ? (
+            <div className={styles.emptyAgents}>
+              <p>No agents yet.</p>
+              <Button variant="primary" size="sm" onClick={addAgent}>
+                + Add agent
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className={styles.agentsList}>
+                {config.agents.map((agent, i) => (
+                  <AgentCardEditor
+                    key={i}
+                    agent={agent}
+                    index={i}
+                    globalProvider={config.provider}
+                    globalOnComplete={config.on_complete}
+                    agentNamesForDeps={agentNames}
+                    defaultExpanded={!agent.name}
+                    validationError={
+                      validationError && validationError.agent === agent.name
+                        ? `${validationError.field ?? ''} ${validationError.error}`.trim()
+                        : null
+                    }
+                    onChange={(next) => updateAgent(i, next)}
+                    onRemove={() => removeAgent(i)}
+                  />
+                ))}
+              </div>
+              <div className={styles.addRow}>
+                <Button variant="secondary" size="sm" onClick={addAgent}>
+                  + Add agent
+                </Button>
+              </div>
+            </>
+          )}
+        </Card>
+
+        {showYaml && (
+          <Card header={<CardTitle>.dmux-agents.yml preview</CardTitle>}>
+            <pre className={styles.yaml}>{yaml}</pre>
+          </Card>
+        )}
+      </div>
+
+      <div className={styles.bottomBar}>
+        <Button variant="secondary" onClick={handleDiscard} disabled={!dirty}>
+          Discard changes
+        </Button>
+        <span className={styles.spacer} />
+        <Button variant="secondary" onClick={() => save()} loading={saving} disabled={config.agents.length === 0}>
+          Save config
+        </Button>
+        <Button variant="primary" onClick={() => save({ andRun: true })} loading={saving} disabled={config.agents.length === 0}>
+          Save & Run
+        </Button>
+      </div>
     </div>
   );
 }

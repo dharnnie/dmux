@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import RunCard from '../components/RunCard';
 import Button from '../components/Button';
-import { useToast } from '../components/Toasts';
+import NewRunSheet from '../components/NewRunSheet';
 import styles from './Dashboard.module.css';
 
 /**
@@ -11,9 +10,8 @@ import styles from './Dashboard.module.css';
  * the projects list moves to `/projects`.
  */
 export default function Dashboard() {
-  const navigate = useNavigate();
-  const toast = useToast();
   const [runs, setRuns] = useState(null); // null = loading, [] = no runs
+  const [spawnOpen, setSpawnOpen] = useState(false);
 
   const fetchRuns = () => {
     fetch('/api/runs')
@@ -29,10 +27,7 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  const handleNewRun = () => {
-    toast('New Run sheet coming in a later Wave 2A slice — pick a project to start.', 'info');
-    navigate('/projects');
-  };
+  const handleNewRun = () => setSpawnOpen(true);
 
   if (runs === null) {
     return (
@@ -106,6 +101,8 @@ export default function Dashboard() {
           )}
         </>
       )}
+
+      <NewRunSheet open={spawnOpen} onClose={() => setSpawnOpen(false)} />
     </div>
   );
 }

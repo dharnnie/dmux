@@ -1,0 +1,256 @@
+/* Progress dots */
+.steps {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: center;
+  margin-bottom: var(--space-4);
+}
+
+.dot {
+  width: 24px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-card-active);
+  transition: background 0.15s;
+}
+
+.dotActive {
+  background: var(--accent-pink);
+}
+
+.footerSpacer {
+  flex: 1;
+}
+
+/* Step 1 — Path */
+.pathGrid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 540px) {
+  .pathGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.pathCard {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  font-family: inherit;
+}
+
+.pathCard:hover:not(:disabled) {
+  background: var(--bg-card-hover);
+  border-color: var(--border-hover);
+}
+
+.pathCard:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pathCardDisabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pathGlyph {
+  font-size: 32px;
+}
+
+.pathBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+}
+
+.pathTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pathDesc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.pathArrow {
+  margin-top: auto;
+  color: var(--accent-cyan);
+  font-size: 13px;
+}
+
+.pathSoon {
+  margin-top: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Step 2 — Pick skill */
+.skillStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.skillList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.skillCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: inherit;
+  width: 100%;
+}
+
+.skillCard:hover:not(:disabled) {
+  background: var(--bg-card-hover);
+  border-color: var(--border-hover);
+}
+
+.skillCardDisabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skillTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.skillName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.skillProvider {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+}
+
+.skillDesc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.skillMeta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.altRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.altLabel {
+  color: var(--text-secondary);
+}
+
+.empty {
+  padding: var(--space-5);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Step 3 — Review */
+.reviewStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reviewRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.reviewLabel {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  min-width: 60px;
+}
+
+.reviewValue {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.reviewDesc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding-left: calc(60px + var(--space-3));
+}
+
+.reviewWarning {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--accent-orange) 12%, transparent);
+  border: 1px solid var(--accent-orange);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reviewWarning code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-input);
+  padding: 1px var(--space-1);
+  border-radius: 3px;
+}

@@ -159,11 +159,22 @@ app.post('/api/projects/:name/launch', (req, res) => {
     .catch((err) => res.status(500).json({ error: err.stderr || err.error }));
 });
 
-// Start agents
+// Start agents. Body may contain { trigger: { type, skill_name } } so the
+// spawn sheet can record the right trigger on the new Run. Falls back to
+// "manual" when no trigger is provided (preserving the existing behavior
+// of bare /agents/start callers).
 app.post('/api/projects/:name/agents/start', (req, res) => {
   const name = req.params.name;
+  const env = {};
+  const trigger = req.body?.trigger;
+  if (trigger?.type === 'skill') {
+    env.DMUX_RUN_TRIGGER = 'skill';
+    if (trigger.skill_name) env.DMUX_RUN_SKILL_NAME = trigger.skill_name;
+  } else if (trigger?.type === 'nl') {
+    env.DMUX_RUN_TRIGGER = 'nl';
+  }
 
-  execDmux(`agents start ${name} -y`)
+  execDmux(`agents start ${name} -y`, env)
     .then((result) => res.json({ ok: true, output: result.stdout }))
     .catch((err) => res.status(500).json({ error: err.stderr || err.error, output: err.stdout }));
 });

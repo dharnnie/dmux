@@ -15,3 +15,9 @@ export {
   markRunCleaned,
   markRunCompleted,
 } from './runs.js';
+
+export {
+  fileMatchesScope,
+  parseNumstat,
+  computeViolations,
+} from './scope.js';

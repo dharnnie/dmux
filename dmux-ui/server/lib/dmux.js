@@ -10,6 +10,8 @@ import {
   readRun as readRunFromCore,
   markRunCleaned as markRunCleanedFromCore,
 } from '../../../dmux-core/src/runs.js';
+import { computeViolations as computeViolationsFromCore } from '../../../dmux-core/src/scope.js';
+import { parseAgentsConfig as parseAgentsConfigFromCore } from '../../../dmux-core/src/config.js';
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
   ? join(process.env.XDG_CONFIG_HOME, 'dmux')
@@ -169,6 +171,121 @@ export function stopRun(projectPath, runId) {
   }
 
   return { ok: true, sessionWasAlive };
+}
+
+// --- Scope-violation helpers ---
+
+/**
+ * Resolve the worktree path for an agent given a parsed config. Returns null
+ * if the worktree no longer exists on disk (run was cleaned up).
+ */
+function resolveWorktreePath(projectPath, parsed, agentName) {
+  const worktreeBase = parsed.worktree_base.startsWith('/')
+    ? parsed.worktree_base
+    : join(projectPath, parsed.worktree_base);
+  const worktreePath = join(worktreeBase, `${parsed.session}-${agentName}`);
+  return existsSync(worktreePath) ? worktreePath : null;
+}
+
+function resolveBaseBranch(projectPath) {
+  const baseFile = join(projectPath, '.dmux', 'base_branch');
+  if (!existsSync(baseFile)) return 'main';
+  return (readFileSync(baseFile, 'utf-8').trim() || 'main');
+}
+
+/**
+ * Compute the violations for a single agent. Returns one of:
+ *   { violations: [...], scope, base, branch }      — normal case
+ *   { unavailable: true, reason }                    — can't check (no
+ *                                                      scope, plan/review
+ *                                                      role, missing
+ *                                                      worktree, git failure)
+ */
+function computeAgentViolations(projectPath, parsed, agent, base) {
+  if (agent.role !== 'build') {
+    return {
+      unavailable: true,
+      reason: `${agent.role} agents have no worktree to check.`,
+    };
+  }
+  if (!Array.isArray(agent.scope) || agent.scope.length === 0) {
+    return {
+      unavailable: true,
+      reason: 'no_scope',
+    };
+  }
+
+  const worktreePath = resolveWorktreePath(projectPath, parsed, agent.name);
+  if (!worktreePath) {
+    return {
+      unavailable: true,
+      reason: 'Worktree no longer exists (likely cleaned up).',
+    };
+  }
+
+  try {
+    const numstat = execSync(
+      `git -C "${worktreePath}" diff --numstat "${base}"...HEAD`,
+      { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10 },
+    );
+    const violations = computeViolationsFromCore(numstat, agent.scope);
+    return {
+      violations,
+      scope: agent.scope,
+      base,
+      branch: agent.branch || '(detached)',
+    };
+  } catch (e) {
+    return { unavailable: true, reason: `git diff --numstat failed: ${e.message}` };
+  }
+}
+
+/**
+ * Full violations payload for one agent — used by the per-agent endpoint.
+ */
+export function readAgentViolations(projectPath, runId, agentName) {
+  const run = readRunFromCore(projectPath, runId);
+  if (!run) return { unavailable: true, reason: 'Run not found' };
+
+  let parsed;
+  try {
+    parsed = parseAgentsConfigFromCore(run.config.yaml);
+  } catch (e) {
+    return { unavailable: true, reason: `Couldn't parse frozen config: ${e.message}` };
+  }
+
+  const agent = parsed.agents.find((a) => a.name === agentName);
+  if (!agent) return { unavailable: true, reason: `Agent ${agentName} not in run` };
+
+  const base = resolveBaseBranch(projectPath);
+  return computeAgentViolations(projectPath, parsed, agent, base);
+}
+
+/**
+ * Per-agent violation counts for a whole run — used by Run Detail to render
+ * the banner + per-row badges without spinning up N separate fetches.
+ *
+ * Returns { byAgent: { name: count|null } }. null = unavailable (no scope,
+ * not a build agent, worktree gone). 0 = checked, clean.
+ */
+export function readRunViolationsSummary(projectPath, runId) {
+  const run = readRunFromCore(projectPath, runId);
+  if (!run) return { byAgent: {} };
+
+  let parsed;
+  try {
+    parsed = parseAgentsConfigFromCore(run.config.yaml);
+  } catch {
+    return { byAgent: {} };
+  }
+
+  const base = resolveBaseBranch(projectPath);
+  const byAgent = {};
+  for (const agent of parsed.agents) {
+    const result = computeAgentViolations(projectPath, parsed, agent, base);
+    byAgent[agent.name] = result.unavailable ? null : result.violations.length;
+  }
+  return { byAgent };
 }
 
 export async function readAgentDiff(projectPath, runId, agentName) {

@@ -50,6 +50,53 @@
   gap: var(--space-2);
 }
 
+.violationBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  background: color-mix(in srgb, var(--accent-orange) 12%, transparent);
+  border: 1px solid var(--accent-orange);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.violationGlyph {
+  font-size: 18px;
+  color: var(--accent-orange);
+}
+
+.violationBanner strong {
+  color: var(--accent-orange);
+}
+
+.violationLink {
+  margin-left: auto;
+  color: var(--accent-orange);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.violationLink:hover {
+  color: var(--accent-orange);
+  text-decoration: underline;
+}
+
+.violationPill {
+  display: inline-flex;
+  align-items: center;
+  margin-left: var(--space-2);
+  padding: 1px var(--space-1);
+  background: color-mix(in srgb, var(--accent-orange) 12%, transparent);
+  border: 1px solid var(--accent-orange);
+  border-radius: var(--radius-sm);
+  color: var(--accent-orange);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
 .statusLine {
   display: flex;
   align-items: center;

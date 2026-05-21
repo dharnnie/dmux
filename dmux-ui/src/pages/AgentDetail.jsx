@@ -4,6 +4,7 @@ import Tabs from '../components/Tabs';
 import TerminalPane from '../components/TerminalPane';
 import PlanViewer from '../components/PlanViewer';
 import DiffViewer from '../components/DiffViewer';
+import ScopeViolationViewer from '../components/ScopeViolationViewer';
 import Button from '../components/Button';
 import styles from './AgentDetail.module.css';
 
@@ -44,6 +45,7 @@ export default function AgentDetail() {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('terminal');
+  const [violationCount, setViolationCount] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,6 +66,25 @@ export default function AgentDetail() {
     const id = setInterval(fetchRun, 4000);
     return () => { cancelled = true; clearInterval(id); };
   }, [projectName, runId]);
+
+  // Pull the violation count once per agent (or per polled run update) so
+  // the Violations tab label can show "Violations (N)".
+  useEffect(() => {
+    let cancelled = false;
+    const fetchCount = () => {
+      fetch(`/api/projects/${projectName}/runs/${runId}/violations-summary`)
+        .then((r) => (r.ok ? r.json() : { byAgent: {} }))
+        .then((body) => {
+          if (cancelled) return;
+          const v = body?.byAgent?.[agentName];
+          setViolationCount(typeof v === 'number' ? v : null);
+        })
+        .catch(() => !cancelled && setViolationCount(null));
+    };
+    fetchCount();
+    const id = setInterval(fetchCount, 6000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [projectName, runId, agentName]);
 
   if (error) {
     return (
@@ -155,7 +176,11 @@ export default function AgentDetail() {
           { value: 'terminal', label: 'Terminal' },
           { value: 'plan', label: 'Plan' },
           { value: 'diff', label: 'Diff' },
-          { value: 'violations', label: 'Violations' },
+          {
+            value: 'violations',
+            label: 'Violations',
+            count: violationCount && violationCount > 0 ? violationCount : undefined,
+          },
         ]}
         value={tab}
         onChange={setTab}
@@ -181,14 +206,12 @@ export default function AgentDetail() {
           <DiffViewer projectName={projectName} runId={runId} agentName={agent.name} />
         )}
         {tab === 'violations' && (
-          <div className={styles.empty}>
-            <p>No violations recorded.</p>
-            <p className={styles.emptyHint}>
-              Scope-violation detection ships in a follow-up slice — once the server
-              diffs each worktree on completion, files modified outside declared
-              <code> scope</code> will be listed here with a quick "add to scope" action.
-            </p>
-          </div>
+          <ScopeViolationViewer
+            projectName={projectName}
+            runId={runId}
+            agentName={agent.name}
+            onClickViewDiff={() => setTab('diff')}
+          />
         )}
       </Tabs>
     </div>

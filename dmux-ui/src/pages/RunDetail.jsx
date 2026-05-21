@@ -40,6 +40,7 @@ export default function RunDetail() {
   const [error, setError] = useState(null);
   const [confirmStop, setConfirmStop] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [violations, setViolations] = useState(null); // { byAgent: { name: count|null } }
 
   const fetchRun = () => {
     fetch(`/api/projects/${name}/runs/${runId}`)
@@ -57,12 +58,22 @@ export default function RunDetail() {
       .catch((e) => setError(e.message));
   };
 
+  const fetchViolations = () => {
+    fetch(`/api/projects/${name}/runs/${runId}/violations-summary`)
+      .then((r) => (r.ok ? r.json() : { byAgent: {} }))
+      .then(setViolations)
+      .catch(() => setViolations({ byAgent: {} }));
+  };
+
   useEffect(() => {
     fetchRun();
+    fetchViolations();
     // Light polling — agent statuses are derived from signal files on the
-    // server, so this picks up completions as they happen.
+    // server, so this picks up completions as they happen. Violations
+    // refresh on a slower interval since they cost a git diff per agent.
     const id = setInterval(fetchRun, 4000);
-    return () => clearInterval(id);
+    const id2 = setInterval(fetchViolations, 8000);
+    return () => { clearInterval(id); clearInterval(id2); };
   }, [name, runId]);
 
   if (error) {
@@ -85,9 +96,35 @@ export default function RunDetail() {
 
   const elapsed = formatElapsed(run);
 
+  // Compute violation summary: total across all agents, plus the first
+  // agent name with violations (for the banner's deep link).
+  const byAgent = violations?.byAgent ?? {};
+  const totalViolations = Object.values(byAgent).reduce(
+    (acc, n) => acc + (typeof n === 'number' ? n : 0),
+    0,
+  );
+  const firstViolatingAgent = Object.entries(byAgent).find(
+    ([, n]) => typeof n === 'number' && n > 0,
+  )?.[0];
+
   return (
     <div className={styles.page}>
       <Link to={`/projects/${name}`} className={styles.backLink}>← {name}</Link>
+
+      {totalViolations > 0 && firstViolatingAgent && (
+        <div className={styles.violationBanner} role="alert">
+          <span className={styles.violationGlyph} aria-hidden="true">⚠</span>
+          <span>
+            <strong>{totalViolations}</strong> scope violation{totalViolations === 1 ? '' : 's'} detected.
+          </span>
+          <Link
+            to={`/projects/${name}/runs/${runId}/agents/${firstViolatingAgent}`}
+            className={styles.violationLink}
+          >
+            View violations →
+          </Link>
+        </div>
+      )}
 
       <header className={styles.header}>
         <div className={styles.headerLeft}>
@@ -168,6 +205,14 @@ export default function RunDetail() {
                   <span className={styles.statusBadge} data-tone={STATUS_TONE[a.status]}>
                     {STATUS_GLYPH[a.status] ?? '·'} {a.status}
                   </span>
+                  {byAgent[a.name] > 0 && (
+                    <span
+                      className={styles.violationPill}
+                      title={`${byAgent[a.name]} scope violation${byAgent[a.name] === 1 ? '' : 's'}`}
+                    >
+                      ⚠ {byAgent[a.name]}
+                    </span>
+                  )}
                 </td>
                 <td className={styles.cellMono}>{formatAgentDuration(run, a)}</td>
                 <td className={styles.cellOpen}>

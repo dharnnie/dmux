@@ -33,7 +33,7 @@
   padding: 12px 16px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-bottom: 1px solid var(--border-subtle);
@@ -73,7 +73,7 @@
 
 .itemDesc {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

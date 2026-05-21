@@ -75,7 +75,7 @@
 }
 
 .divider {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .spacer {
@@ -198,7 +198,7 @@
 }
 
 .rowChevron {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 14px;
 }
 

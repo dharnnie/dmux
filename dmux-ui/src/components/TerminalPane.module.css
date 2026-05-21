@@ -22,7 +22,7 @@
 .paneLabel {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .terminal {

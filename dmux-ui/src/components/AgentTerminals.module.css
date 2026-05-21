@@ -21,7 +21,7 @@
 
 .hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .tabs {
@@ -58,7 +58,7 @@
   padding: 6px 14px;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border: 1px solid transparent;
   margin-left: auto;
   transition: color 0.15s;

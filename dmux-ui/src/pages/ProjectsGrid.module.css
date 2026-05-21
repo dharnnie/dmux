@@ -32,12 +32,12 @@
 }
 
 .search::placeholder {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .pathHint {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .title {
@@ -69,7 +69,7 @@
 .empty {
   text-align: center;
   padding: 60px 20px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 15px;
 }
 
@@ -134,7 +134,7 @@
 }
 
 .modalInput::placeholder {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .modalActions {

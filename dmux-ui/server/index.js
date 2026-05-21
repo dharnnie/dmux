@@ -28,6 +28,8 @@ import {
   readRunDetail,
   readAgentPlan,
   readAgentDiff,
+  readAgentViolations,
+  readRunViolationsSummary,
   stopRun,
 } from './lib/dmux.js';
 
@@ -294,6 +296,34 @@ app.post('/api/projects/:name/runs/:runId/stop', (req, res) => {
     res.json(result);
   } catch (e) {
     if (e.code === 'not_found') return res.status(404).json({ error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Per-agent violation counts for the whole run — used by Run Detail to
+// render the banner + row badges in a single fetch.
+app.get('/api/projects/:name/runs/:runId/violations-summary', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(readRunViolationsSummary(project.path, req.params.runId));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Full violations payload for one agent — used by the Violations tab on
+// Agent Detail.
+app.get('/api/projects/:name/runs/:runId/agents/:agentName/violations', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(readAgentViolations(project.path, req.params.runId, req.params.agentName));
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

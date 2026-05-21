@@ -381,14 +381,23 @@ app.delete('/api/skills/:name', (req, res) => {
   }
 });
 
-// Apply skill to a project (generate config + optionally start)
+// Apply skill to a project (generate config + optionally start).
+// Body may include { inputs: { name: value } } when the skill has a declared
+// inputs schema; absent/empty inputs preserves the pre-Wave-2B behavior of
+// writing the static skill template.
 app.post('/api/projects/:name/skills/:skill', (req, res) => {
   try {
     const projects = parseProjectsFile();
     const project = projects.find((p) => p.name === req.params.name);
     if (!project) return res.status(404).json({ ok: false, message: 'Project not found' });
 
-    const result = applySkillToProject(req.params.skill, project.path);
+    const inputs = (req.body && typeof req.body === 'object' && req.body.inputs) || {};
+    const result = applySkillToProject(req.params.skill, project.path, inputs);
+    if (!result.ok) {
+      // 422 when the skill or its inputs are the problem (e.g. missing
+      // required input, malformed skill); 500 only for genuine surprises.
+      return res.status(422).json(result);
+    }
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });

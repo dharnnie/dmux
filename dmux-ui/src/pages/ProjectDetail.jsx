@@ -8,6 +8,7 @@ import Button from '../components/Button';
 import Disclosure from '../components/Disclosure';
 import RunCard from '../components/RunCard';
 import { ConfirmDialog } from '../components/Sheet';
+import NewRunSheet from '../components/NewRunSheet';
 import { useToast } from '../components/Toasts';
 import styles from './ProjectDetail.module.css';
 
@@ -22,6 +23,7 @@ export default function ProjectDetail() {
   const [runs, setRuns] = useState(null); // null = loading, [] = no runs
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [spawnOpen, setSpawnOpen] = useState(false);
 
   // Quick Launch (legacy tmux pane spawn — demoted to Settings)
   const [panes, setPanes] = useState(2);
@@ -72,12 +74,7 @@ export default function ProjectDetail() {
     return () => clearInterval(id);
   }, [name]);
 
-  const handleNewRun = () => {
-    // The spawn sheet (Wave 2A 4.6) isn't built yet. For now, take the user
-    // to the editor where they can configure + Save & Start.
-    toast('New Run sheet coming soon — opening the editor for now.', 'info');
-    navigate(`/projects/${name}/agents`);
-  };
+  const handleNewRun = () => setSpawnOpen(true);
 
   const handleLaunch = () => {
     toast('Launching tmux session...', 'info');
@@ -271,6 +268,12 @@ export default function ProjectDetail() {
         confirmLabel="Remove project"
         confirmVariant="danger"
         busy={removing}
+      />
+
+      <NewRunSheet
+        open={spawnOpen}
+        onClose={() => setSpawnOpen(false)}
+        initialProject={name}
       />
     </div>
   );

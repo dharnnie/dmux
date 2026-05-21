@@ -66,7 +66,11 @@ export function createRun(projectPath, {
   const id = newRunId(now);
   const dir = join(projectPath, RUNS_DIR, id);
   const signalsDir = join(dir, 'signals');
+  const plansDir = join(dir, 'plans');
   mkdirSync(signalsDir, { recursive: true });
+  // Plan-role agents write to plansDir/{name}.md; downstream agents read
+  // from the same path. Created up front so agents don't need to mkdir.
+  mkdirSync(plansDir, { recursive: true });
 
   const run = {
     id,
@@ -82,7 +86,7 @@ export function createRun(projectPath, {
   };
 
   writeFileSync(join(dir, 'run.json'), JSON.stringify(run, null, 2));
-  return { id, dir, signalsDir };
+  return { id, dir, signalsDir, plansDir };
 }
 
 /** Read run.json by id. Returns null if not found. */

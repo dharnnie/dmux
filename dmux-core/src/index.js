@@ -21,3 +21,9 @@ export {
   parseNumstat,
   computeViolations,
 } from './scope.js';
+
+export {
+  parseSkillYaml,
+  applyInputs,
+  SkillSchemaError,
+} from './skills.js';

@@ -1,0 +1,61 @@
+name: tdd-feature
+description: Plan → tests → code → review for a single feature, with declared scope.
+tags: [tdd, build, plan, review]
+provider: claude
+
+inputs:
+  - name: feature_name
+    type: text
+    description: Short feature name. Used in branch names and prompts. Letters, digits, dashes.
+    required: true
+
+  - name: files_in_scope
+    type: paths
+    description: Files / directories the engineer agent is allowed to modify.
+    required: false
+
+  - name: branch_prefix
+    type: text
+    description: Prefix for the engineer's branch (defaults to "feature").
+    default: feature
+
+  - name: with_security_review
+    type: boolean
+    description: Add a security-focused review agent at the end.
+    default: false
+
+agents:
+  - name: planner
+    role: plan
+    task: |
+      Produce an implementation plan for {{feature_name}} in {{project_name}}.
+      Cover: scope (what's in and what's out), step-by-step approach,
+      files to touch, edge cases, testing strategy, and risks.
+      Write a thorough plan so the engineer can execute without further questions.
+    model: sonnet
+
+  - name: engineer
+    branch: "{{branch_prefix}}/{{feature_name}}"
+    task: |
+      Implement {{feature_name}} per the upstream plan.
+      Write tests first (TDD): for each unit of behavior, add a failing test,
+      then implement until it passes, then refactor. Cover the edge cases
+      called out in the plan.
+      When the implementation is complete, run the project's test suite and
+      ensure everything passes.
+    model: opus
+    scope: "{{files_in_scope}}"
+    depends_on:
+      - planner
+
+  - name: reviewer
+    role: review
+    task: |
+      Review the changes on the {{branch_prefix}}/{{feature_name}} branch.
+      Run: git diff main..{{branch_prefix}}/{{feature_name}}.
+      Check: correctness, edge cases, test coverage, scope adherence,
+      style consistency with the rest of the project. Reference file:line
+      for each finding. Write findings to CODE_REVIEW.md at the project root.
+    model: sonnet
+    depends_on:
+      - engineer

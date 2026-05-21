@@ -95,8 +95,14 @@ export default function ProjectsGrid() {
         </div>
       ) : (
         <div className={styles.empty}>
-          <p>No projects configured yet.</p>
-          <p className={styles.emptyHint}>dmux -a myproject ~/code/myproject</p>
+          <p>No projects yet.</p>
+          <p className={styles.emptyHint}>
+            Add a project to register a codebase with dmux. Each registered
+            project can host its own agent runs and config.
+          </p>
+          <button className={styles.addBtn} onClick={() => setShowAdd(true)}>
+            Add your first project
+          </button>
         </div>
       )}
 

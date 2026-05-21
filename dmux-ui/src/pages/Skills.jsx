@@ -139,17 +139,12 @@ export default function Skills() {
 
       {skills.length === 0 && (
         <div className={styles.empty}>
-          <p>No skills found.</p>
-          <p className={styles.emptyHint}>Skills ship with dmux. Try reinstalling or check your installation.</p>
+          <p>Built-in skills are missing.</p>
+          <p className={styles.emptyHint}>
+            Skills ship bundled with dmux. Reinstall dmux to restore them.
+          </p>
         </div>
       )}
-
-      <div className={styles.cliHint}>
-        <span>CLI:</span>
-        <code>dmux skills list</code>
-        <code>dmux skills install security-audit</code>
-        <code>dmux skills run security-audit myproject</code>
-      </div>
     </div>
   );
 }

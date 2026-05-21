@@ -362,10 +362,22 @@ export function getTmuxSessions() {
   }
 }
 
-export function execDmux(args) {
+/**
+ * Run a dmux CLI invocation and return its stdout/stderr.
+ *
+ * `extraEnv` is merged into process.env for the child — used by the spawn
+ * flow to pass trigger metadata (DMUX_RUN_TRIGGER / DMUX_RUN_SKILL_NAME)
+ * down through dmux.sh → dmux-runs.js so the Run record carries the right
+ * trigger.
+ */
+export function execDmux(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const dmuxPath = getDmuxPath();
-    exec(`"${dmuxPath}" ${args}`, { encoding: 'utf-8', timeout: 30000 }, (error, stdout, stderr) => {
+    exec(`"${dmuxPath}" ${args}`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+      env: { ...process.env, ...extraEnv },
+    }, (error, stdout, stderr) => {
       if (error) {
         reject({ error: error.message, stderr, stdout });
       } else {

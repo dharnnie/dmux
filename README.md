@@ -4,34 +4,36 @@
 [![Platform: macOS | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-brightgreen.svg)]()
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-yellow.svg)]()
 
-Launch multi-pane tmux dev environments in one command — or orchestrate multiple Claude Code agents across git worktrees.
+Run Claude and Gemini agents on your codebase, in parallel, from a CLI or the web.
 
 ```bash
-# Open two projects, each in their own terminal window
-dmux -p frontend,backend
-
-# Open with 3 panes, Claude running in 2 of them
-dmux -p myapp -n 3 -c 2
-
-# Launch multiple Claude agents with isolated worktrees
+# Launch a multi-agent run on a configured project
 dmux agents start
+
+# Open the web UI — Dashboard, Run history, scope checks
+dmux ui
+
+# Spin up a tmux dev environment without agents
+dmux -p myapp -n 3 -c 2
 
 # Paste a screenshot into a tmux pane
 dmux screenshot
-
-# Open the local web UI
-dmux ui
 ```
+
+dmux orchestrates parallel AI agents across isolated git worktrees, gives each one a scope, tracks every run as a first-class record, and surfaces the results in a local web UI. Open-source, locally-run, no telemetry.
 
 ---
 
-## Why dmux
+## What's in it
 
-- **One command, full environment** — stop manually opening terminals, splitting panes, and cd-ing into projects
-- **Multi-agent orchestration** — run parallel Claude Code agents in isolated worktrees, each with its own branch and task
-- **Terminal agnostic** — Alacritty, Kitty, WezTerm, iTerm2
-- **Zero dependencies beyond tmux** — pure bash, no runtimes, no daemons
-- **Optional web UI** — local React dashboard for visual management
+- **Multi-agent orchestration.** Run multiple Claude or Gemini agents in parallel, each on its own git worktree and branch. Roles: `plan` (writes a plan markdown file), `build` (writes code in a worktree), and `review` (no worktree, runs on the project root).
+- **Per-agent model selection.** Mix `opus`, `sonnet`, `haiku` for Claude; `pro`, `flash` for Gemini. A planner on Sonnet feeding two builders on Opus is one config away.
+- **Run history.** Every spawn creates a Run record under `.dmux/runs/{id}/` with the frozen config, per-agent signals, and plan files. Cleanup removes worktrees but preserves the record so you can review past work.
+- **Scope checks.** Declare which files each agent may modify, and dmux surfaces files touched outside scope after the run.
+- **Local web UI.** Browser-based dashboard with live run status, an agent config editor, a scope-violation viewer, and a spawn sheet that builds a run from a skill in three clicks.
+- **CLI and UI parity.** Anything you can do from the web UI you can do from `dmux agents …` and vice versa. Both read the same `.dmux-agents.yml` and write the same `.dmux/runs/`.
+- **Terminal agnostic.** Alacritty, Kitty, WezTerm, iTerm2.
+- **Best-effort accessibility.** Keyboard navigation, screen-reader friendly markup, contrast-aware palette. No WCAG compliance claims.
 
 ---
 
@@ -42,221 +44,154 @@ dmux ui
 curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/install.sh | bash
 ```
 
+**With the web UI:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/install.sh | bash -s -- --with-ui
+```
+
 **Or clone:**
 ```bash
 git clone https://github.com/dharnnie/dmux.git
-cd dmux && ./install.sh
+cd dmux && ./install.sh --with-ui
 ```
 
-**Requirements:** tmux and one of Alacritty, Kitty, WezTerm, or iTerm2.
+**Requirements:**
+
+- **tmux** and one of Alacritty, Kitty, WezTerm, or iTerm2.
+- **node** + **jq** — required for the multi-agent orchestrator and the web UI. The installer prompts to install `jq` for you via your system package manager; node you install yourself.
+- The Claude CLI (`claude`) and/or the Gemini CLI (`gemini`) on `$PATH`.
 
 ```bash
 # macOS
-brew install tmux alacritty
+brew install tmux jq alacritty
 
-# Ubuntu/Debian
-sudo apt install tmux alacritty
-
-# Arch
-sudo pacman -S tmux alacritty
+# Ubuntu / Debian
+sudo apt install tmux jq alacritty
 ```
 
 ---
 
-## Quick Start
+## Multi-agent orchestration
 
-### Add your projects
+Building a feature often means touching multiple parts of the codebase at once. `dmux agents start` spawns a parallel team of agents — each in its own git worktree, each with its own task, optionally chained by `depends_on` so a planner runs before its builders.
 
-```bash
-dmux -a myapp ~/code/myapp
-dmux -a backend ~/work/backend-api
+### Quick start
 
-dmux -l              # list projects
-dmux -r oldproject   # remove a project
-```
-
-### Launch
-
-```bash
-dmux -p myapp                  # one project
-dmux -p myapp,backend          # multiple projects (separate windows)
-dmux -p myapp -n 3             # 3 panes
-dmux -p myapp -n 3 -c 2       # 3 panes, Claude in first 2
-```
-
----
-
-## CLI Reference
-
-### Launch
-
-| Flag | Description |
-|------|-------------|
-| `-p, --projects` | Comma-separated project names to launch |
-| `-n, --panes` | Number of panes per window (default: 1) |
-| `-c, --claude` | Number of panes to run `claude` in (default: 0) |
-| `-t, --terminal` | Terminal to use: `alacritty`, `kitty`, `wezterm`, `iterm` |
-
-### Project management
-
-| Flag | Description |
-|------|-------------|
-| `-a, --add` | Add a project: `-a name /path` |
-| `-r, --remove` | Remove a project: `-r name` |
-| `-l, --list` | List configured projects |
-
-### Other
-
-| Flag | Description |
-|------|-------------|
-| `agents <action>` | Multi-agent orchestration (see below) |
-| `screenshot` | Paste clipboard image into a tmux pane (see below) |
-| `ui` | Launch the local web UI |
-| `-h, --help` | Show help |
-| `-v, --version` | Show version |
-
-**Default terminal:** `export DMUX_TERMINAL=kitty` in your shell config.
-
-**Project storage:** `~/.config/dmux/projects` (`name=$HOME/path/to/project` format).
-
----
-
-## Multi-Agent Orchestration
-
-Building a feature often means touching multiple parts of the codebase at once. The `agents` subcommand runs multiple Claude Code agents in parallel, each in its own git worktree with an assigned task.
-
-### Quick Start
-
-1. Create a `.dmux-agents.yml` in your project root:
+1. Drop a `.dmux-agents.yml` into your project root:
 
 ```yaml
 session: my-api-agents
-worktree_base: ..              # relative to project root
-main_pane: true                # include an integration pane
+worktree_base: ..
+main_pane: true
 
 agents:
-  - name: auth
-    branch: feature/auth
-    task: "implement JWT authentication with refresh tokens"
-  - name: catalog
-    branch: feature/catalog
-    task: "build product listing API with search and filters"
-  - name: admin
-    branch: feature/admin
-    task: "create admin dashboard CRUD endpoints"
-    auto_accept: true              # skip permission prompts
+  - name: planner
+    role: plan
+    task: "Plan the OAuth implementation — provider config, token storage, session middleware."
+    model: sonnet
+
+  - name: engineer
+    branch: feature/oauth
+    task: "Implement OAuth following the upstream plan."
+    model: opus
+    scope:
+      - src/auth/
+      - src/middleware/auth.ts
+    depends_on:
+      - planner
+
+  - name: reviewer
+    role: review
+    task: "Review the OAuth changes for security and style."
+    depends_on:
+      - engineer
 ```
 
-2. Run it:
+2. Start the run:
 
 ```bash
 dmux agents start
 ```
 
-This will:
-- Create a git worktree per agent (e.g. `../my-api-agents-auth`)
-- Launch a tmux session with one pane per agent + a main integration pane
-- Run `claude "task..."` in each agent pane automatically
+3. Or launch from the UI:
 
-Add `.dmux/` to your `.gitignore` — dmux uses `.dmux/signals/` to track agent completion and `.dmux/changelogs/` to store per-agent changelogs. Both are cleaned up by `agents cleanup`.
-
-> **Tip:** Your `CLAUDE.md` and any [claude-cortex](https://github.com/dharnnie/claude-cortex) rules are automatically available in every worktree.
-
-### Session Layout
-
+```bash
+dmux ui          # opens http://localhost:3100
+# Dashboard → + New Run → pick the skill or use the existing config
 ```
-┌───────────────────┬───────────────────┬─────────────────────┐
-│ auth              │ catalog           │ admin               │
-│ claude "impl..."  │ claude "build..." │ claude "create..."  │
-├───────────────────┴───────────────────┴─────────────────────┤
-│ main: project root (integration/review/git operations)      │
-└─────────────────────────────────────────────────────────────┘
-```
+
+The run record lives at `.dmux/runs/{id}/` — the frozen YAML, per-agent signal files, the plan written by the planner agent, and (once scope checking runs) any violation data. Add `.dmux/` to your `.gitignore` — the installer's template `.gitignore` already does this.
+
+### How agents see each other
+
+- A **`plan` agent** receives a prompt instruction to write its plan markdown to `.dmux/runs/{id}/plans/{name}.md`.
+- **Downstream agents** (build, review) that list a plan agent in their `depends_on` are told the absolute path of that plan and asked to read it first.
+- This convention is purely prompt-injected — no agent is forced to comply, but Claude / Gemini reliably do.
+
+### Roles
+
+| Role | Worktree | Scope check | Use for |
+|---|---|---|---|
+| `plan` | no | n/a | Producing a plan markdown that downstream agents consume |
+| `build` (default) | yes | yes | Implementing the change on a branch |
+| `review` | no | n/a | Reading the build agents' work and surfacing findings |
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `dmux agents start` | Read `.dmux-agents.yml`, create worktrees, launch session |
-| `dmux agents start myapp` | Start agents for a registered project |
-| `dmux agents start --config path.yml` | Use a custom config file |
-| `dmux agents start -y` | Skip the pre-launch confirmation prompt |
-| `dmux agents status` | Show agent pane statuses (running/idle/waiting/done) |
-| `dmux agents changelog` | Generate a combined changelog from all agent work |
-| `dmux agents cleanup` | Remove worktrees, signal dir, and kill the session (writes `AGENTS_CHANGELOG.md`) |
-| `dmux agents init` | Interactively generate a `.dmux-agents.yml` |
-| `dmux agents help` | Show agents help |
+| Command | What it does |
+|---|---|
+| `dmux agents init` | Interactively scaffolds a `.dmux-agents.yml` |
+| `dmux agents start [project]` | Reads the config, creates a Run record, spawns the tmux session, launches agents |
+| `dmux agents status [project]` | Shows the live status of each agent's pane |
+| `dmux agents cleanup [project]` | Marks the run cleaned, removes worktrees, kills the tmux session |
+| `dmux agents changelog [project]` | Builds a combined changelog from the agents' per-agent summaries |
+| `dmux agents help` | Lists agents subcommands |
 
-Worktree paths follow the pattern: `{worktree_base}/{session}-{agent_name}`
-
-### Config Reference
+### Config reference
 
 | Field | Required | Default | Description |
-|-------|----------|---------|-------------|
+|---|---|---|---|
 | `session` | yes | — | tmux session name |
 | `worktree_base` | no | `..` | Directory for worktrees (relative to project root) |
 | `main_pane` | no | `true` | Add a bottom pane at the project root |
+| `namespace_branches` | no | `false` | Prefix branches with your git username slug |
+| `provider` | no | `claude` | Default provider for agents: `claude` or `gemini` |
+| `on_complete` | no | — | Default post-task instructions: `test`, `push`, `pr` |
 | `agents[].name` | yes | — | Agent identifier (used in worktree path) |
-| `agents[].branch` | yes* | — | Git branch for the worktree (*not required for review agents) |
-| `agents[].task` | no | — | Task string passed to `claude` |
-| `agents[].scope` | no | — | List of writable file paths (appended to prompt) |
-| `agents[].context` | no | — | List of read-only file paths (appended to prompt) |
-| `agents[].role` | no | `build` | Agent role: `build` (default) or `review` |
-| `agents[].depends_on` | no | — | List of agent names this agent waits for before launching |
-| `agents[].auto_accept` | no | `false` | When `true`, runs `claude --dangerously-skip-permissions` for fully autonomous operation |
-
-### Review Agent
-
-> **Note:** Review agents are supported but not recommended. A review agent uses the same model as the build agents, adding cost and latency with limited independent value. Prefer reviewing branches yourself in the main pane or running automated checks as part of the build agent task.
-
-A `review` agent runs at the project root (no worktree or branch) and reviews the work of other agents. Use `depends_on` to make it wait until build agents finish:
-
-```yaml
-agents:
-  - name: auth
-    branch: feature/auth
-    task: "implement JWT authentication"
-    scope:
-      - src/auth/
-      - src/middleware/auth.ts
-    context:
-      - src/types/
-
-  - name: catalog
-    branch: feature/catalog
-    task: "build product listing API"
-
-  - name: reviewer
-    role: review
-    task: "review changes on feature/auth and feature/catalog for bugs and security issues"
-    depends_on:
-      - auth
-      - catalog
-```
+| `agents[].role` | no | `build` | `plan`, `build`, or `review` |
+| `agents[].branch` | yes for `build` | — | Git branch for the worktree |
+| `agents[].task` | recommended | — | The task string injected into the agent's prompt |
+| `agents[].provider` | no | inherits | Per-agent provider override |
+| `agents[].model` | no | provider default | `opus` / `sonnet` / `haiku` (claude) or `pro` / `flash` (gemini) |
+| `agents[].scope` | no | — | Files this agent may modify; surfaces violations in the UI |
+| `agents[].context` | no | — | Files this agent may read but not modify |
+| `agents[].depends_on` | no | — | List of agent names this agent waits for |
+| `agents[].auto_accept` | no | `false` | Run with `--dangerously-skip-permissions` (Claude) / `--yolo` (Gemini) |
+| `agents[].on_complete` | no | inherits | Per-agent override of the top-level `on_complete` |
 
 ---
 
 ## Web UI
 
-dmux includes an optional local web interface for managing projects and agents visually.
+`dmux ui` starts a local server on `http://localhost:3100`. No accounts, no auth, no network — the server only talks to your local filesystem, tmux, and the agent CLIs.
+
+### Surfaces
+
+- **Dashboard** — what's happening right now across all your projects. Running runs at the top with live status, recent runs below.
+- **Projects** — your registered codebases. Add or remove from the browser.
+- **Project Detail** — current run, run history, git context, settings.
+- **Run Detail** — agent table with live status, plan files, diff, scope-violation banner. Stop run / cleanup live here.
+- **Agent Detail** — drill into one agent in one run. Four tabs:
+  - **Terminal** — live xterm against the agent's tmux pane (when running)
+  - **Plan** — rendered markdown of the agent's plan output (or the upstream plan it consumed)
+  - **Diff** — `git diff base...HEAD` in the agent's worktree
+  - **Violations** — files modified outside the declared `scope`
+- **Skills** — browse the built-in skill library (`code-review`, `docs-gen`, `refactor`, `security-audit`, `test-coverage`).
+- **New Run sheet** — `+ New Run` from anywhere opens a three-step wizard: pick a skill, pick a project, review, launch.
 
 ### Install
 
-The UI requires **Node.js** and **npm**.
-
-```bash
-# Quick install (remote, includes UI)
-curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/install.sh | bash -s -- --with-ui
-
-# Or from a cloned repo
-git clone https://github.com/dharnnie/dmux.git
-cd dmux && ./install.sh --with-ui
-
-# Or install the UI manually from a cloned repo
-cd dmux-ui && npm install
-```
-
-The `--with-ui` flag copies the UI to `~/.local/share/dmux/ui/`, installs dependencies, and builds the production bundle. If you skip `--with-ui` during initial install, you can re-run the installer with the flag later.
+The UI requires Node.js and npm. Install with `--with-ui` (above) and dmux copies it to `~/.local/share/dmux/ui/`, installs dependencies, and builds the production bundle. If you skip `--with-ui` initially, re-run the installer with the flag later.
 
 ### Launch
 
@@ -267,73 +202,72 @@ dmux ui
 DMUX_UI_PORT=8080 dmux ui
 ```
 
-This starts a local server on `http://localhost:3100` and opens it in your browser.
+---
 
-### Features
+## CLI reference
 
-- **Projects Grid** — All registered projects with status badges
-- **Add/Remove Projects** — Manage projects from the browser
-- **Quick Launch** — Pick pane count and Claude pane count, hit Launch
-- **Agent Config Editor** — Visual form to build `.dmux-agents.yml` with live YAML preview
-- **Start/Cleanup Agents** — One-click agent orchestration
-- **Live Status** — Agent status table that auto-refreshes every 5 seconds
+### Launch
 
-See [`dmux-ui/README.md`](dmux-ui/README.md) for development setup and architecture details.
+| Flag | Description |
+|---|---|
+| `-p, --projects` | Comma-separated project names to launch |
+| `-n, --panes` | Number of panes per window (default: 1) |
+| `-c, --claude` | Number of panes to run `claude` in |
+| `-g, --gemini` | Number of panes to run `gemini` in |
+| `-t, --terminal` | Terminal to use: `alacritty`, `kitty`, `wezterm`, `iterm` |
+
+### Project management
+
+| Flag | Description |
+|---|---|
+| `-a, --add` | Add a project: `-a name /path` |
+| `-r, --remove` | Remove a project: `-r name` |
+| `-l, --list` | List configured projects |
+
+### Subcommands
+
+| Subcommand | Description |
+|---|---|
+| `agents <action>` | Multi-agent orchestration (see above) |
+| `skills <action>` | Browse, install, or run a skill |
+| `screenshot` | Paste clipboard image into a tmux pane |
+| `ui` | Launch the local web UI |
+| `update` | Self-update from the latest release |
+
+Default terminal: `export DMUX_TERMINAL=kitty` in your shell config.
+Project storage: `~/.config/dmux/projects` (`name=$HOME/path/to/project` format).
 
 ---
 
-## Screenshot Paste
+## Screenshot paste
 
-tmux is text-only, so you can't paste images directly into panes. The `screenshot` command bridges this gap — it captures an image from your clipboard, saves it to disk, and sends the file path into a tmux pane so Claude Code can read it.
-
-### Usage
+tmux is text-only, so you can't paste images directly into panes. `dmux screenshot` captures your clipboard image, saves it to disk, and types the file path into a tmux pane so a coding agent can read it as input.
 
 ```bash
-# Copy a screenshot to clipboard (e.g., Cmd+Shift+4 on macOS), then:
+# Copy a screenshot to clipboard (e.g. Cmd+Shift+4 on macOS), then:
 dmux screenshot
 
-# Save clipboard image without sending to a pane
+# Save without sending to a pane
 dmux screenshot --save-only
 
 # Target a specific session and pane
 dmux screenshot --session my-api-agents --pane 2
-
-# Custom output directory
-dmux screenshot --dir ~/screenshots
 ```
 
-### How it works
-
-1. You copy a screenshot to your clipboard
-2. Run `dmux screenshot`
-3. The image is saved to `.dmux/screenshots/screenshot-{timestamp}.png`
-4. If multiple tmux sessions or panes exist, you're prompted to pick one
-5. The file path is typed into the target pane — switch to tmux and press Enter
-
-Claude Code can read images by file path, so this works seamlessly as input.
-
-**Requirements:**
-- **macOS:** No extra dependencies (uses built-in `osascript`)
-- **Linux:** Requires `xclip` (`sudo apt install xclip`)
+Requirements: built-in `osascript` on macOS; `xclip` on Linux (`sudo apt install xclip`).
 
 ---
 
 ## Tips
 
-**Closing sessions:**
 ```bash
 tmux ls                            # list running sessions
 tmux kill-session -t dmux-myapp    # kill a specific session
-dmux agents cleanup                # kill agents session + remove worktrees
 tmux kill-server                   # kill all sessions
+tmux attach -t dmux-myapp          # attach to a running session
 ```
 
-**Attaching to existing sessions:**
-```bash
-tmux attach -t dmux-myapp
-```
-
-**Pane navigation (tmux defaults):**
+Pane navigation (tmux defaults):
 - `Ctrl-b` then arrow keys to move between panes
 - `Ctrl-b` then `z` to zoom/unzoom a pane
 - `Ctrl-b` then `d` to detach (leave running)
@@ -346,7 +280,8 @@ tmux attach -t dmux-myapp
 curl -fsSL https://raw.githubusercontent.com/dharnnie/dmux/main/uninstall.sh | bash
 ```
 
-Or if you cloned the repo:
+Or, if you cloned the repo:
+
 ```bash
 ./uninstall.sh
 ```

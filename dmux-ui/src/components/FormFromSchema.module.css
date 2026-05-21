@@ -1,0 +1,21 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.checkboxRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.checkboxHelper {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 26px;  /* aligns under the checkbox label */
+}
+
+.checkboxError {
+  color: var(--accent-red);
+}

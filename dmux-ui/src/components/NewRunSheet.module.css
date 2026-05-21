@@ -254,3 +254,110 @@
   padding: 1px var(--space-1);
   border-radius: 3px;
 }
+
+/* Step 2b — Fill inputs */
+.inputsStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.inputsHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.inputsHeaderLabel {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.inputsHeaderValue {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+/* Review inputs summary */
+.reviewInputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.reviewInputList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: calc(60px + var(--space-3));
+}
+
+.reviewInputList li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+
+.reviewInputName {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  padding: 1px var(--space-1);
+  border-radius: 3px;
+}
+
+.reviewInputArrow {
+  color: var(--text-secondary);
+}
+
+.reviewInputValue {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.reviewYaml {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0;
+}
+
+.reviewYaml summary {
+  padding: var(--space-2) var(--space-3);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.reviewYaml summary:hover {
+  color: var(--text-primary);
+}
+
+.reviewYaml[open] summary {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.reviewYaml pre {
+  margin: 0;
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  overflow-x: auto;
+}

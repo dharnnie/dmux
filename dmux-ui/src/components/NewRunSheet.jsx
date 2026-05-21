@@ -1,39 +1,46 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sheet from './Sheet';
 import Button from './Button';
 import { Select } from './Field';
+import FormFromSchema from './FormFromSchema';
 import { useToast } from './Toasts';
 import styles from './NewRunSheet.module.css';
 
 /**
- * NewRunSheet — Section 4.6 (Wave 2A skeleton).
+ * NewRunSheet — Section 4.6 (Wave 2A skeleton + Wave 2B parameterized).
  *
- * Three-step Wizard inside the Sheet primitive:
- *   1. Path choice (Quick now; Smart shows "Coming in Wave 2B")
+ * Steps:
+ *   1. Path choice (Quick now; Smart shows "Coming soon" until Wave 2B PR 3)
  *   2. Pick skill (project select + skill cards)
- *   3. Review + Save & Run
+ *   2b. Fill inputs (when the chosen skill has an `inputs:` schema)
+ *   3. Review + Save & Run (with rendered-YAML preview when inputs were used)
  *
  * On Save & Run:
- *   - POST /api/projects/:name/skills/:skill — writes .dmux-agents.yml
- *   - POST /api/projects/:name/agents/start with { trigger } body — the
- *     bash side picks up the trigger via env and records it on the Run
+ *   - POST /api/projects/:name/skills/:skill with { inputs } — writes the
+ *     rendered .dmux-agents.yml (server templates via dmux-core's
+ *     applyInputs)
+ *   - POST /api/projects/:name/agents/start with { trigger } — bash side
+ *     records trigger=skill on the new Run
  *   - Navigate to /projects/:name so the user sees the new run in History
  *
  * Props:
  *   open, onClose — standard Sheet controls
- *   initialProject — project name to pre-select (passes through Step 2)
+ *   initialProject — project name to pre-select for Step 2
  */
 export default function NewRunSheet({ open, onClose, initialProject = null }) {
   const navigate = useNavigate();
   const toast = useToast();
   const [step, setStep] = useState('path');
-  const [path, setPath] = useState(null); // 'quick' | 'smart'
+  const [path, setPath] = useState(null);
   const [project, setProject] = useState(initialProject);
   const [skill, setSkill] = useState(null);
+  const [inputValues, setInputValues] = useState({});
+  const [inputErrors, setInputErrors] = useState({});
   const [projects, setProjects] = useState([]);
   const [skills, setSkills] = useState([]);
   const [submitting, setSubmitting] = useState(false);
+  const [renderedPreview, setRenderedPreview] = useState(null);
 
   // Reset internal state every time the sheet opens.
   useEffect(() => {
@@ -42,7 +49,10 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
     setPath(null);
     setProject(initialProject);
     setSkill(null);
+    setInputValues({});
+    setInputErrors({});
     setSubmitting(false);
+    setRenderedPreview(null);
   }, [open, initialProject]);
 
   useEffect(() => {
@@ -51,29 +61,60 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
     fetch('/api/skills').then((r) => r.json()).then(setSkills).catch(() => setSkills([]));
   }, [open]);
 
-  const stepIndex = step === 'path' ? 1 : step === 'skill' ? 2 : 3;
-  const stepLabel = step === 'path' ? 'Choose path' : step === 'skill' ? 'Pick skill' : 'Review';
-  const title = `Step ${stepIndex} of 3 — ${stepLabel}`;
+  const hasInputs = Boolean(skill?.inputs && skill.inputs.length > 0);
+
+  // Step index for the progress dots — collapses "inputs" into step 2 visually
+  // but uses the title to make it clear it's a separate phase.
+  const titleStepNum = step === 'path' ? 1 : step === 'skill' ? 2 : step === 'inputs' ? 2 : 3;
+  const titleLabel = {
+    path: 'Choose path',
+    skill: 'Pick skill',
+    inputs: 'Fill inputs',
+    review: 'Review',
+  }[step] ?? '';
+  const title = `Step ${titleStepNum} of 3 — ${titleLabel}`;
   const isReview = step === 'review';
 
   const handleBack = () => {
     if (submitting) return;
-    if (step === 'review') setStep('skill');
+    if (step === 'review') setStep(hasInputs ? 'inputs' : 'skill');
+    else if (step === 'inputs') setStep('skill');
     else if (step === 'skill') setStep('path');
+  };
+
+  const handleInputsContinue = () => {
+    setInputErrors({});
+    setStep('review');
   };
 
   const handleSaveAndRun = async () => {
     if (!project || !skill) return;
     setSubmitting(true);
+    setInputErrors({});
     try {
-      // 1. Apply the skill — writes .dmux-agents.yml in the project
-      const applyRes = await fetch(`/api/projects/${project}/skills/${skill.name}`, { method: 'POST' });
+      const applyRes = await fetch(`/api/projects/${project}/skills/${skill.name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: inputValues }),
+      });
       const applyBody = await applyRes.json().catch(() => ({}));
+      if (applyRes.status === 422) {
+        // Skill validation failed (missing required, malformed, etc.). Surface
+        // the error against the offending input and bounce back to that step.
+        if (applyBody.input) {
+          setInputErrors({ [applyBody.input]: applyBody.message });
+          setStep(hasInputs ? 'inputs' : 'review');
+          setSubmitting(false);
+          toast(applyBody.message || 'Skill validation failed', 'error');
+          return;
+        }
+        throw new Error(applyBody.message || 'Skill validation failed');
+      }
       if (!applyRes.ok || !applyBody.ok) {
         throw new Error(applyBody.message || applyBody.error || `Apply failed (HTTP ${applyRes.status})`);
       }
+      setRenderedPreview(applyBody.config ?? null);
 
-      // 2. Start agents with the trigger so the new Run records it
       const startRes = await fetch(`/api/projects/${project}/agents/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -93,14 +134,23 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
     }
   };
 
-  // Footer changes per step. Step 1 has no footer (cards advance), step 2
-  // gets [Back] (cards advance), step 3 gets [Back] [Save & Run].
+  // Footer per step.
   let footer = null;
   if (step === 'skill') {
     footer = (
       <>
         <span className={styles.footerSpacer} />
         <Button variant="secondary" onClick={handleBack}>← Back</Button>
+      </>
+    );
+  } else if (step === 'inputs') {
+    footer = (
+      <>
+        <Button variant="secondary" onClick={handleBack}>← Back</Button>
+        <span className={styles.footerSpacer} />
+        <Button variant="primary" onClick={handleInputsContinue}>
+          Review →
+        </Button>
       </>
     );
   } else if (step === 'review') {
@@ -129,7 +179,7 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
         {[1, 2, 3].map((n) => (
           <span
             key={n}
-            className={`${styles.dot} ${n <= stepIndex ? styles.dotActive : ''}`}
+            className={`${styles.dot} ${n <= titleStepNum ? styles.dotActive : ''}`}
             aria-hidden="true"
           />
         ))}
@@ -152,14 +202,42 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
           skills={skills}
           onPickSkill={(s) => {
             setSkill(s);
-            setStep('review');
+            setInputValues({});
+            setInputErrors({});
+            // If this skill has inputs, show the inputs step; otherwise
+            // jump straight to review.
+            setStep((s?.inputs ?? []).length > 0 ? 'inputs' : 'review');
           }}
           onClose={onClose}
         />
       )}
 
+      {step === 'inputs' && skill && (
+        <InputsStep
+          skill={skill}
+          values={inputValues}
+          errors={inputErrors}
+          onChange={(name, value) => {
+            setInputValues((prev) => ({ ...prev, [name]: value }));
+            // Clear any prior server error for this field as soon as the user edits.
+            setInputErrors((prev) => {
+              if (!prev[name]) return prev;
+              const next = { ...prev };
+              delete next[name];
+              return next;
+            });
+          }}
+        />
+      )}
+
       {step === 'review' && (
-        <ReviewStep project={project} skill={skill} />
+        <ReviewStep
+          project={project}
+          skill={skill}
+          inputValues={inputValues}
+          hasInputs={hasInputs}
+          renderedPreview={renderedPreview}
+        />
       )}
     </Sheet>
   );
@@ -170,11 +248,7 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
 function PathStep({ onPick }) {
   return (
     <div className={styles.pathGrid}>
-      <button
-        type="button"
-        className={styles.pathCard}
-        onClick={() => onPick('quick')}
-      >
+      <button type="button" className={styles.pathCard} onClick={() => onPick('quick')}>
         <span className={styles.pathGlyph} aria-hidden="true">⚡</span>
         <div className={styles.pathBody}>
           <div className={styles.pathTitle}>Quick</div>
@@ -186,12 +260,7 @@ function PathStep({ onPick }) {
         </div>
       </button>
 
-      <button
-        type="button"
-        className={`${styles.pathCard} ${styles.pathCardDisabled}`}
-        disabled
-        aria-disabled="true"
-      >
+      <button type="button" className={`${styles.pathCard} ${styles.pathCardDisabled}`} disabled aria-disabled="true">
         <span className={styles.pathGlyph} aria-hidden="true">✨</span>
         <div className={styles.pathBody}>
           <div className={styles.pathTitle}>Smart</div>
@@ -199,7 +268,7 @@ function PathStep({ onPick }) {
             Describe the work in your own words and let a planner agent
             propose the team.
           </div>
-          <div className={styles.pathSoon}>Coming in Wave 2B</div>
+          <div className={styles.pathSoon}>Coming soon</div>
         </div>
       </button>
     </div>
@@ -243,6 +312,7 @@ function SkillStep({ projects, project, onProjectChange, skills, onPickSkill, on
                 <div className={styles.skillMeta}>
                   {s.installed ? 'installed' : 'built-in'}
                   {s.tags?.length > 0 && ` · ${s.tags.join(', ')}`}
+                  {s.inputs?.length > 0 && ` · ${s.inputs.length} input${s.inputs.length === 1 ? '' : 's'}`}
                 </div>
               </button>
             </li>
@@ -266,9 +336,42 @@ function SkillStep({ projects, project, onProjectChange, skills, onPickSkill, on
   );
 }
 
+// ---------- Step 2b: Fill inputs ----------
+
+function InputsStep({ skill, values, errors, onChange }) {
+  return (
+    <div className={styles.inputsStep}>
+      <div className={styles.inputsHeader}>
+        <span className={styles.inputsHeaderLabel}>Skill</span>
+        <code className={styles.inputsHeaderValue}>{skill.name}</code>
+      </div>
+      <FormFromSchema
+        schema={skill.inputs}
+        values={values}
+        errors={errors}
+        onChange={onChange}
+      />
+    </div>
+  );
+}
+
 // ---------- Step 3: Review ----------
 
-function ReviewStep({ project, skill }) {
+function ReviewStep({ project, skill, inputValues, hasInputs, renderedPreview }) {
+  // Build a compact summary of the supplied input values for the review screen.
+  const filledInputs = useMemo(() => {
+    if (!hasInputs) return [];
+    return (skill?.inputs ?? []).map((input) => {
+      const v = inputValues[input.name];
+      let display;
+      if (v === undefined || v === null || v === '') display = '(default)';
+      else if (Array.isArray(v)) display = v.length === 0 ? '(empty)' : v.join(', ');
+      else if (typeof v === 'boolean') display = v ? 'true' : 'false';
+      else display = String(v);
+      return { name: input.name, display };
+    });
+  }, [skill, inputValues, hasInputs]);
+
   return (
     <div className={styles.reviewStep}>
       <div className={styles.reviewRow}>
@@ -279,9 +382,30 @@ function ReviewStep({ project, skill }) {
         <span className={styles.reviewLabel}>Skill</span>
         <code className={styles.reviewValue}>{skill?.name}</code>
       </div>
-      {skill?.description && (
-        <p className={styles.reviewDesc}>{skill.description}</p>
+      {skill?.description && <p className={styles.reviewDesc}>{skill.description}</p>}
+
+      {hasInputs && filledInputs.length > 0 && (
+        <div className={styles.reviewInputs}>
+          <span className={styles.reviewLabel}>Inputs</span>
+          <ul className={styles.reviewInputList}>
+            {filledInputs.map((row) => (
+              <li key={row.name}>
+                <code className={styles.reviewInputName}>{row.name}</code>
+                <span className={styles.reviewInputArrow} aria-hidden="true">=</span>
+                <span className={styles.reviewInputValue}>{row.display}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
+
+      {renderedPreview && (
+        <details className={styles.reviewYaml}>
+          <summary>Show generated .dmux-agents.yml</summary>
+          <pre>{renderedPreview}</pre>
+        </details>
+      )}
+
       <div className={styles.reviewWarning} role="alert">
         <strong>⚠ This will overwrite the existing <code>.dmux-agents.yml</code></strong> in {project} and immediately start agents in a fresh tmux session.
       </div>

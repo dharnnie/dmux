@@ -12,6 +12,11 @@ import {
 } from '../../../dmux-core/src/runs.js';
 import { computeViolations as computeViolationsFromCore } from '../../../dmux-core/src/scope.js';
 import { parseAgentsConfig as parseAgentsConfigFromCore } from '../../../dmux-core/src/config.js';
+import {
+  parseSkillYaml as parseSkillYamlFromCore,
+  applyInputs as applyInputsFromCore,
+  SkillSchemaError,
+} from '../../../dmux-core/src/skills.js';
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
   ? join(process.env.XDG_CONFIG_HOME, 'dmux')
@@ -490,7 +495,7 @@ export function getSkills() {
     for (const name of readdirSync(skillsDir)) {
       const yml = join(skillsDir, name, 'skill.yml');
       if (existsSync(yml)) {
-        const meta = parseSkillYml(yml);
+        const meta = readSkillSummary(yml);
         skills.push({ ...meta, installed: true });
         installed.add(name);
       }
@@ -504,7 +509,7 @@ export function getSkills() {
       if (installed.has(name)) continue;
       const yml = join(builtinDir, name, 'skill.yml');
       if (existsSync(yml)) {
-        const meta = parseSkillYml(yml);
+        const meta = readSkillSummary(yml);
         skills.push({ ...meta, installed: false });
       }
     }
@@ -525,23 +530,34 @@ function getBuiltinSkillsDir() {
   return null;
 }
 
-function parseSkillYml(filePath) {
+// Replaced the Wave 1 hand-rolled line parser with dmux-core's parseSkillYaml.
+// Lightweight wrapper that just reads the file + falls back gracefully when
+// a malformed skill ships — for the listing endpoint, a broken skill should
+// surface as a degraded entry rather than crash the whole list.
+function readSkillSummary(filePath) {
   const content = readFileSync(filePath, 'utf-8');
-  const meta = { name: '', description: '', tags: [], provider: 'claude' };
-
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('name:')) meta.name = trimmed.slice(5).trim();
-    else if (trimmed.startsWith('description:')) meta.description = trimmed.slice(12).trim();
-    else if (trimmed.startsWith('provider:')) meta.provider = trimmed.slice(9).trim();
-    else if (trimmed.startsWith('tags:')) {
-      const raw = trimmed.slice(5).trim();
-      const m = raw.match(/\[(.+)]/);
-      if (m) meta.tags = m[1].split(',').map((t) => t.trim());
-    }
+  try {
+    const skill = parseSkillYamlFromCore(content);
+    return {
+      name: skill.name,
+      description: skill.description,
+      tags: skill.tags,
+      provider: skill.provider,
+      inputs: skill.inputs,
+      agentCount: skill.agents.length,
+    };
+  } catch (e) {
+    // Degraded entry — show what we can, mark it broken.
+    return {
+      name: '(invalid skill)',
+      description: e instanceof SkillSchemaError ? e.message : 'Could not parse skill.yml',
+      tags: [],
+      provider: 'claude',
+      inputs: [],
+      agentCount: 0,
+      invalid: true,
+    };
   }
-
-  return meta;
 }
 
 export function installSkill(name) {
@@ -564,7 +580,7 @@ export function installSkill(name) {
   return { ok: true, message: `Installed skill: ${name}` };
 }
 
-export function applySkillToProject(skillName, projectPath) {
+export function applySkillToProject(skillName, projectPath, inputValues = {}) {
   // Find the skill yml
   let skillYml = null;
   const installed = join(homedir(), '.local', 'share', 'dmux', 'skills', skillName, 'skill.yml');
@@ -582,20 +598,46 @@ export function applySkillToProject(skillName, projectPath) {
 
   const content = readFileSync(skillYml, 'utf-8');
 
-  // Extract agents section (everything from "agents:" onwards)
-  const agentsIdx = content.indexOf('\nagents:');
-  if (agentsIdx === -1) return { ok: false, message: 'Skill has no agents defined.' };
+  let skill;
+  try {
+    skill = parseSkillYamlFromCore(content);
+  } catch (e) {
+    if (e instanceof SkillSchemaError) {
+      return { ok: false, message: `Skill is malformed: ${e.message}`, input: e.input, field: e.field };
+    }
+    return { ok: false, message: `Couldn't parse skill: ${e.message}` };
+  }
 
-  const agentsSection = content.slice(agentsIdx + 1);
+  // Render the agents block with the user-supplied input values + the
+  // reserved {{project_name}} drawn from the project directory name.
+  const projectName = projectPath.split('/').filter(Boolean).pop() ?? '';
+  let renderedAgentsYaml;
+  try {
+    renderedAgentsYaml = applyInputsFromCore(skill, inputValues, { project_name: projectName });
+  } catch (e) {
+    if (e instanceof SkillSchemaError) {
+      return { ok: false, message: e.message, input: e.input, field: e.field };
+    }
+    throw e;
+  }
 
-  // Build the dmux config
-  const config = `session: skill-${skillName}\nnotifications: true\n\n${agentsSection}`;
+  // The rendered output is just the agents list. Wrap with the session
+  // header and notifications setting that applySkillToProject has always
+  // added on the way out.
+  const config = `session: skill-${skillName}\nnotifications: true\n\nagents:\n${indentBlock(renderedAgentsYaml, 2)}`;
 
-  // Write to project
   const configPath = join(projectPath, '.dmux-agents.yml');
   writeFileSync(configPath, config);
 
   return { ok: true, message: `Applied skill '${skillName}' to project.`, config };
+}
+
+function indentBlock(text, spaces) {
+  const pad = ' '.repeat(spaces);
+  return text
+    .split('\n')
+    .map((line) => (line.length > 0 ? pad + line : line))
+    .join('\n');
 }
 
 export function removeSkill(name) {

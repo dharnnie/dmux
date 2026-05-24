@@ -1,7 +1,7 @@
-import { execSync, exec } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { execSync, exec, spawn } from 'child_process';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { WebSocketServer } from 'ws';
 import { loadAgentsConfig as loadAgentsConfigParsedFromCore, ConfigError } from '../../../dmux-core/src/config.js';
 import {
@@ -11,6 +11,7 @@ import {
   markRunCleaned as markRunCleanedFromCore,
   approveProposal as approveProposalFromCore,
   discardProposal as discardProposalFromCore,
+  createProposal as createProposalFromCore,
 } from '../../../dmux-core/src/runs.js';
 import { computeViolations as computeViolationsFromCore } from '../../../dmux-core/src/scope.js';
 import { parseAgentsConfig as parseAgentsConfigFromCore } from '../../../dmux-core/src/config.js';
@@ -124,6 +125,246 @@ export async function approveAndLaunchProposal(projectPath, projectName, runId) 
 
 export function discardProposalById(projectPath, runId) {
   return discardProposalFromCore(projectPath, runId);
+}
+
+/**
+ * "Edit before running" — write the proposal's YAML into the project's live
+ * .dmux-agents.yml so the existing config editor surface is pre-filled, then
+ * abandon the proposal. The user can then tweak the config and start a run
+ * normally. No agents spawn from this path.
+ */
+export function promoteProposalToEdit(projectPath, runId) {
+  const run = readRunFromCore(projectPath, runId);
+  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (run.status !== 'proposed') {
+    throw new Error(`Run ${runId} is not a proposal (status=${run.status})`);
+  }
+  writeFileSync(join(projectPath, '.dmux-agents.yml'), run.config.yaml);
+  discardProposalFromCore(projectPath, runId);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// NL planner (Wave 2B PR 3)
+// ---------------------------------------------------------------------------
+
+const PLANNER_MODEL = 'sonnet';
+const PLANNER_TIMEOUT_MS = 120_000;
+const FILE_TREE_MAX_DEPTH = 3;
+const FILE_TREE_MAX_ENTRIES = 200;
+const FILE_TREE_SKIP = new Set([
+  'node_modules', '.git', 'dist', 'build', '.next', '.cache',
+  '.venv', 'venv', '__pycache__', '.dmux', 'coverage', '.turbo',
+]);
+
+/**
+ * Run the NL planner: builds a system prompt from project context + the user's
+ * free-form request, shells to `claude --print`, extracts the fenced ```yaml
+ * block from the response, validates it via dmux-core's config parser
+ * (retrying once on schema error with the validation message folded into the
+ * prompt), and persists the result as a proposal via createProposal.
+ *
+ * Returns { proposalId } on success. Throws with a user-readable message on
+ * any failure — the route handler maps to HTTP status.
+ */
+export async function runPlanner(projectPath, projectName, userPrompt) {
+  if (typeof userPrompt !== 'string' || userPrompt.trim().length === 0) {
+    throw new Error('Prompt is required.');
+  }
+
+  const ctx = {
+    projectName,
+    fileTree: summarizeFileTree(projectPath),
+    claudeMd: safeReadFile(join(projectPath, 'CLAUDE.md')),
+    existingConfig: safeReadFile(join(projectPath, '.dmux-agents.yml')),
+  };
+
+  let yamlText;
+  let parsed;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const planner = buildPlannerPrompt(ctx, userPrompt, lastError);
+    const response = await execClaude(planner);
+    const extracted = extractYamlBlock(response);
+    if (!extracted) {
+      lastError = 'Your previous response did not contain a ```yaml fenced code block. Emit exactly one.';
+      if (attempt === 2) throw new Error('Planner produced no YAML block after retry.');
+      continue;
+    }
+    try {
+      parsed = parseAgentsConfigFromCore(extracted);
+      yamlText = extracted;
+      break;
+    } catch (e) {
+      lastError = `Your previous YAML was rejected by the schema validator: ${e.message}. Fix and re-emit.`;
+      if (attempt === 2) {
+        throw new Error(`Planner output failed validation after retry: ${e.message}`);
+      }
+    }
+  }
+
+  const agentsSummary = parsed.agents.map((a) => ({
+    name: a.name,
+    role: a.role,
+    branch: a.branch || '',
+    model: a.model || null,
+    provider: a.provider || parsed.provider || 'claude',
+    depends_on: a.depends_on || [],
+  }));
+
+  const { id } = createProposalFromCore(projectPath, {
+    trigger: { type: 'nl', prompt: userPrompt },
+    configYaml: yamlText,
+    agentsSummary,
+  });
+
+  return { proposalId: id };
+}
+
+function safeReadFile(path) {
+  try {
+    return existsSync(path) ? readFileSync(path, 'utf-8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Depth-limited file-tree summary suitable for prompt context. Walks up to
+ * FILE_TREE_MAX_DEPTH levels, skips well-known noise dirs, and caps total
+ * entries at FILE_TREE_MAX_ENTRIES so we never blow the context window on
+ * a giant repo.
+ */
+function summarizeFileTree(root) {
+  const lines = [];
+  let truncated = false;
+
+  const walk = (dir, depth) => {
+    if (lines.length >= FILE_TREE_MAX_ENTRIES) { truncated = true; return; }
+    if (depth > FILE_TREE_MAX_DEPTH) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    for (const entry of entries) {
+      if (lines.length >= FILE_TREE_MAX_ENTRIES) { truncated = true; return; }
+      if (entry.name.startsWith('.') && entry.name !== '.dmux-agents.yml') {
+        // Skip dotfiles/dotdirs except the agents config; the planner doesn't
+        // benefit from seeing .DS_Store etc.
+        continue;
+      }
+      if (FILE_TREE_SKIP.has(entry.name)) continue;
+      const full = join(dir, entry.name);
+      const rel = relative(root, full);
+      if (entry.isDirectory()) {
+        lines.push(`${rel}/`);
+        walk(full, depth + 1);
+      } else {
+        lines.push(rel);
+      }
+    }
+  };
+
+  walk(root, 0);
+  if (truncated) lines.push(`(... truncated at ${FILE_TREE_MAX_ENTRIES} entries)`);
+  return lines.join('\n');
+}
+
+function buildPlannerPrompt(ctx, userPrompt, retryError) {
+  const sections = [
+    `You are dmux's planner agent. Read the project state and the user's work request, then propose an agent team as a valid .dmux-agents.yml.`,
+    ``,
+    `The agent team usually has:`,
+    `- One plan-role agent (writes a plan markdown that downstream agents consume)`,
+    `- One or more build-role agents (each on its own branch, with declared \`scope\`)`,
+    `- Optionally one review-role agent at the end`,
+    ``,
+    `Rules:`,
+    `- Emit exactly one fenced \`\`\`yaml code block. No prose outside it.`,
+    `- Use the dmux schema: top-level \`session\`, \`worktree_base\`, \`main_pane\`, and \`agents:\` (a list).`,
+    `- Each agent needs: name, role (plan|build|review|research), branch, task, model, scope (list of paths it may modify), context (list of paths it may read), depends_on (list of agent names).`,
+    `- Pick models thoughtfully: sonnet for planners and reviewers; opus for builders on complex work; haiku only when speed beats quality.`,
+    `- Declare a tight \`scope\` for every build agent. Be specific — list directories or files. Scope is enforced.`,
+    ``,
+    `Project: ${ctx.projectName}`,
+    ``,
+    `Existing .dmux-agents.yml:`,
+    ctx.existingConfig ? '```yaml\n' + ctx.existingConfig + '\n```' : '(none)',
+    ``,
+    `File tree (depth-limited):`,
+    '```\n' + (ctx.fileTree || '(empty)') + '\n```',
+    ``,
+    `CLAUDE.md:`,
+    ctx.claudeMd ? '```\n' + ctx.claudeMd + '\n```' : '(none)',
+    ``,
+    `User request:`,
+    userPrompt,
+  ];
+  if (retryError) {
+    sections.push('', `IMPORTANT — this is a retry. ${retryError}`);
+  }
+  sections.push('', `Now emit the .dmux-agents.yml.`);
+  return sections.join('\n');
+}
+
+/**
+ * Extract the first fenced ```yaml code block from a string. Returns the
+ * inner text (no fences) or null if no block is found.
+ */
+function extractYamlBlock(text) {
+  // Tolerate ```yaml, ```yml, and bare ```. Prefer a labeled block when
+  // present; fall back to the first bare block otherwise.
+  const labeled = text.match(/```ya?ml\s*\n([\s\S]*?)\n```/i);
+  if (labeled) return labeled[1].trim();
+  const bare = text.match(/```\s*\n([\s\S]*?)\n```/);
+  if (bare) return bare[1].trim();
+  return null;
+}
+
+/**
+ * Shell to the `claude` CLI with the prompt on stdin. Throws a clear error
+ * if the binary isn't on PATH (the planner is opt-in until users install it).
+ */
+function execClaude(stdinText) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('claude', ['--model', PLANNER_MODEL, '--print'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, PLANNER_TIMEOUT_MS);
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        reject(new Error('`claude` CLI not found on PATH. The NL planner requires Claude Code installed (https://claude.com/claude-code).'));
+      } else {
+        reject(err);
+      }
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error(`Planner timed out after ${PLANNER_TIMEOUT_MS / 1000}s.`));
+      if (code !== 0) return reject(new Error(`claude exited ${code}: ${(stderr || stdout).slice(0, 500)}`));
+      resolve(stdout);
+    });
+
+    child.stdin.write(stdinText);
+    child.stdin.end();
+  });
 }
 
 /**

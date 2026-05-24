@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import Card, { CardTitle } from '../components/Card';
 import Disclosure from '../components/Disclosure';
 import Button from '../components/Button';
@@ -14,6 +14,7 @@ const STATUS_TONE = {
   cleaned: 'muted',
   abandoned: 'muted',
   pending: 'muted',
+  proposed: 'cyan',
   waiting: 'orange',
 };
 
@@ -24,6 +25,7 @@ const STATUS_GLYPH = {
   cleaned: '○',
   abandoned: '⊘',
   pending: '◌',
+  proposed: '◌',
   waiting: '○',
 };
 
@@ -35,6 +37,7 @@ const STATUS_GLYPH = {
  */
 export default function RunDetail() {
   const { name, runId } = useParams();
+  const navigate = useNavigate();
   const toast = useToast();
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
@@ -91,6 +94,19 @@ export default function RunDetail() {
         <Link to={`/projects/${name}`} className={styles.backLink}>← {name}</Link>
         <p className={styles.loading}>Loading run…</p>
       </div>
+    );
+  }
+
+  if (run.status === 'proposed') {
+    return (
+      <ProposalReview
+        run={run}
+        name={name}
+        runId={runId}
+        onChange={fetchRun}
+        navigate={navigate}
+        toast={toast}
+      />
     );
   }
 
@@ -271,4 +287,148 @@ function formatAgentDuration(run, a) {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
   return `${(ms / 3_600_000).toFixed(1)}h`;
+}
+
+// ---------------------------------------------------------------------------
+// Proposed-status variant: the proposal review page.
+// Shown when a run is in the `proposed` state (created by the NL planner or
+// any future propose-without-launching path). The same /projects/:name/runs/
+// :runId route serves both shapes — once approved, the next poll flips the
+// status and the normal Run view takes over.
+// ---------------------------------------------------------------------------
+
+function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
+  const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | null
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const prompt = run.trigger?.prompt ?? null;
+
+  const callAction = async (action, path, successMessage, onSuccess) => {
+    setBusy(action);
+    try {
+      const res = await fetch(`/api/projects/${name}/proposals/${runId}/${path}`, {
+        method: 'POST',
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      toast(successMessage, 'success');
+      onSuccess?.(body);
+    } catch (e) {
+      toast(`Couldn't ${action}: ${e.message}`, 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className={styles.page}>
+      <Link to={`/projects/${name}`} className={styles.backLink}>← {name}</Link>
+
+      <header className={styles.header}>
+        <div className={styles.headerLeft}>
+          <div className={styles.statusLine}>
+            <span className={styles.statusGlyph} data-tone="cyan">◌</span>
+            <span className={styles.status}>proposed</span>
+            <span className={styles.elapsed}>· {formatTimestamp(run.proposed_at)}</span>
+          </div>
+          <h1 className={styles.title}>Proposed team</h1>
+          <div className={styles.meta}>
+            {formatTrigger(run.trigger)} · {run.agents.length} agent{run.agents.length === 1 ? '' : 's'} · nothing has run yet
+          </div>
+        </div>
+      </header>
+
+      {prompt && (
+        <Card header={<CardTitle>Your request</CardTitle>}>
+          <blockquote className={styles.prompt}>{prompt}</blockquote>
+        </Card>
+      )}
+
+      <Card header={<CardTitle>Proposed agents</CardTitle>}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Role</th>
+              <th>Model</th>
+              <th>Branch</th>
+              <th>Depends on</th>
+            </tr>
+          </thead>
+          <tbody>
+            {run.agents.map((a) => (
+              <tr key={a.name} className={styles.row}>
+                <td className={styles.cellName}>{a.name}</td>
+                <td className={styles.cellMono}>{a.role}</td>
+                <td className={styles.cellMono}>{a.model ?? '—'}</td>
+                <td className={styles.cellMono}>{a.branch || '—'}</td>
+                <td className={styles.cellMono}>
+                  {a.depends_on && a.depends_on.length > 0 ? a.depends_on.join(', ') : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Disclosure title="Proposed .dmux-agents.yml" defaultOpen>
+        <pre className={styles.yaml}>{run.config.yaml}</pre>
+      </Disclosure>
+
+      <div className={styles.proposalActions}>
+        <Button
+          variant="primary"
+          onClick={() =>
+            callAction('approve', 'approve', 'Approved — agents starting.', () => {
+              // The next poll picks up the status flip; we also trigger a
+              // refresh so the user sees the running view immediately.
+              onChange();
+            })
+          }
+          loading={busy === 'approve'}
+          disabled={busy !== null}
+        >
+          Approve & Run
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() =>
+            callAction(
+              'edit',
+              'promote-to-edit',
+              'Loaded into the editor — tweak then start a run.',
+              () => navigate(`/projects/${name}/agents`),
+            )
+          }
+          loading={busy === 'edit'}
+          disabled={busy !== null}
+        >
+          Edit before running
+        </Button>
+        <span className={styles.proposalSpacer} />
+        <Button
+          variant="danger"
+          onClick={() => setConfirmDiscard(true)}
+          disabled={busy !== null}
+        >
+          Discard
+        </Button>
+      </div>
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        onClose={() => busy === null && setConfirmDiscard(false)}
+        onConfirm={() =>
+          callAction('discard', 'discard', 'Proposal discarded.', () => {
+            setConfirmDiscard(false);
+            navigate(`/projects/${name}`);
+          })
+        }
+        title="Discard proposal?"
+        message="The proposal record stays as a terminal log but nothing will run. You can always create a new one."
+        confirmLabel="Discard"
+        confirmVariant="danger"
+        busy={busy === 'discard'}
+      />
+    </div>
+  );
 }

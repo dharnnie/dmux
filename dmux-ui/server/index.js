@@ -31,6 +31,8 @@ import {
   readAgentViolations,
   readRunViolationsSummary,
   stopRun,
+  approveAndLaunchProposal,
+  discardProposalById,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -291,6 +293,41 @@ app.get('/api/projects/:name/runs/:runId/agents/:agentName/plan', (req, res) => 
     res.json(plan);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Approve a proposal. dmux-core writes the live .dmux-agents.yml + sets
+// started_at on the run; then we launch agents against the adopted run.
+app.post('/api/projects/:name/proposals/:runId/approve', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = await approveAndLaunchProposal(project.path, project.name, req.params.runId);
+    res.json(result);
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (/not found/i.test(msg)) return res.status(404).json({ error: msg });
+    if (/abandoned|not a proposal/i.test(msg)) return res.status(409).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Discard a proposal. Sets abandoned_at; no worktrees to clean.
+app.post('/api/projects/:name/proposals/:runId/discard', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = discardProposalById(project.path, req.params.runId);
+    res.json(result);
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (/not found/i.test(msg)) return res.status(404).json({ error: msg });
+    if (/started run/i.test(msg)) return res.status(409).json({ error: msg });
+    res.status(500).json({ error: msg });
   }
 });
 

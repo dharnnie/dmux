@@ -161,29 +161,69 @@ export default function ProjectDetail() {
           </Card>
         )}
 
-        <Card header={<CardTitle>History</CardTitle>}>
-          {runs === null ? (
-            <p className={styles.loading}>Loading runs…</p>
-          ) : runs.length === 0 ? (
-            <div className={styles.empty}>
-              <p className={styles.emptyHeadline}>No runs yet on this project.</p>
-              <p className={styles.emptyHint}>
-                Save and start a run from the editor to begin building history.
-              </p>
-              <div className={styles.emptyActions}>
-                <Button variant="primary" size="sm" onClick={handleNewRun}>
-                  + New Run
-                </Button>
-              </div>
-            </div>
-          ) : (
+        {runs && runs.some((r) => r.status === 'proposed') && (
+          <Card header={<CardTitle>Pending proposals</CardTitle>}>
             <div className={styles.historyList}>
-              {runs.slice(0, 8).map((r) => (
-                <RunCard key={r.id} run={{ ...r, project: name }} variant="row" showProject={false} />
-              ))}
+              {runs
+                .filter((r) => r.status === 'proposed')
+                .map((r) => (
+                  <RunCard
+                    key={r.id}
+                    run={{ ...r, project: name }}
+                    variant="row"
+                    showProject={false}
+                  />
+                ))}
             </div>
-          )}
-        </Card>
+          </Card>
+        )}
+
+        {(() => {
+          if (runs === null) {
+            return (
+              <Card header={<CardTitle>History</CardTitle>}>
+                <p className={styles.loading}>Loading runs…</p>
+              </Card>
+            );
+          }
+          const history = runs.filter((r) => r.status !== 'proposed');
+          if (history.length === 0 && runs.length === 0) {
+            return (
+              <Card header={<CardTitle>History</CardTitle>}>
+                <div className={styles.empty}>
+                  <p className={styles.emptyHeadline}>No runs yet on this project.</p>
+                  <p className={styles.emptyHint}>
+                    Save and start a run from the editor to begin building history.
+                  </p>
+                  <div className={styles.emptyActions}>
+                    <Button variant="primary" size="sm" onClick={handleNewRun}>
+                      + New Run
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            );
+          }
+          if (history.length === 0) {
+            // Proposals exist but nothing has been started yet — skip History
+            // entirely; the proposals card above is the surface.
+            return null;
+          }
+          return (
+            <Card header={<CardTitle>History</CardTitle>}>
+              <div className={styles.historyList}>
+                {history.slice(0, 8).map((r) => (
+                  <RunCard
+                    key={r.id}
+                    run={{ ...r, project: name }}
+                    variant="row"
+                    showProject={false}
+                  />
+                ))}
+              </div>
+            </Card>
+          );
+        })()}
 
         <Card header={<CardTitle>Context</CardTitle>}>
           <GitPanel projectName={name} />

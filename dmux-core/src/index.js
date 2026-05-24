@@ -14,6 +14,9 @@ export {
   listAllRuns,
   markRunCleaned,
   markRunCompleted,
+  createProposal,
+  approveProposal,
+  discardProposal,
 } from './runs.js';
 
 export {

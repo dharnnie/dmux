@@ -16,20 +16,28 @@ const RUNS_DIR = '.dmux/runs';
  * shape is `.dmux/runs/{id}/run.json` plus a `signals/` directory where
  * per-agent `.done` files land as agents complete.
  *
- * run.json schema (v1):
+ * run.json schema (v2 — Wave 2B):
  *   {
  *     id:            string,                 // sortable + filesystem-safe
  *     project:       string,                 // project name from the registry
- *     started_at:    string,                 // ISO 8601 UTC
+ *     proposed_at:   string | null,          // ISO — set on createProposal
+ *     started_at:    string | null,          // ISO — set on createRun OR approveProposal
  *     completed_at:  string | null,          // set when all agents finished
  *     cleaned_at:    string | null,          // set when worktrees removed
+ *     abandoned_at:  string | null,          // set when proposal discarded
  *     trigger:       { type, ...meta },      // 'manual' | 'skill' | 'nl'
  *     config:        { yaml: string, agents: AgentSummary[] }
  *   }
  *
- * The current per-agent status is NOT stored in run.json. We derive it
- * at read time from the signal files, which means there's no concurrent-
- * writer problem and no possibility of stale state.
+ * Status is derived (not stored) from the timestamps + per-agent signals:
+ *   abandoned_at set                 → 'abandoned'
+ *   cleaned_at set                   → 'cleaned'
+ *   proposed_at && !started_at       → 'proposed'
+ *   agents derive running/completed/failed from signal files (as before)
+ *
+ * The per-agent status is also derived at read time from the signal files,
+ * which means there's no concurrent-writer problem and no possibility of
+ * stale state.
  */
 
 /** Generate a fresh run id: YYYY-MM-DDTHHMMSS-{6 hex}. Sortable. */
@@ -75,9 +83,11 @@ export function createRun(projectPath, {
   const run = {
     id,
     project: projectPath.split('/').pop() ?? '',
+    proposed_at: null,
     started_at: now.toISOString(),
     completed_at: null,
     cleaned_at: null,
+    abandoned_at: null,
     trigger,
     config: {
       yaml: configYaml,
@@ -87,6 +97,112 @@ export function createRun(projectPath, {
 
   writeFileSync(join(dir, 'run.json'), JSON.stringify(run, null, 2));
   return { id, dir, signalsDir, plansDir };
+}
+
+/**
+ * Create a Run record in the `proposed` state (Wave 2B). Same on-disk shape
+ * as a regular run, but `proposed_at` is set and `started_at` is null —
+ * status derivation reports 'proposed' until approveProposal flips it.
+ *
+ * Trigger is typically `{ type: 'nl', prompt: '...' }` (the NL planner)
+ * but the function is provider-agnostic — anything that wants to stage a
+ * run for review uses this.
+ */
+export function createProposal(projectPath, {
+  trigger = { type: 'nl' },
+  configYaml,
+  agentsSummary,
+  now = new Date(),
+} = {}) {
+  if (typeof projectPath !== 'string' || projectPath.length === 0) {
+    throw new Error('createProposal: projectPath is required');
+  }
+  if (typeof configYaml !== 'string') {
+    throw new Error('createProposal: configYaml is required (string)');
+  }
+  if (!Array.isArray(agentsSummary)) {
+    throw new Error('createProposal: agentsSummary is required (array)');
+  }
+
+  const id = newRunId(now);
+  const dir = join(projectPath, RUNS_DIR, id);
+  const signalsDir = join(dir, 'signals');
+  const plansDir = join(dir, 'plans');
+  mkdirSync(signalsDir, { recursive: true });
+  mkdirSync(plansDir, { recursive: true });
+
+  const run = {
+    id,
+    project: projectPath.split('/').pop() ?? '',
+    proposed_at: now.toISOString(),
+    started_at: null,
+    completed_at: null,
+    cleaned_at: null,
+    abandoned_at: null,
+    trigger,
+    config: {
+      yaml: configYaml,
+      agents: agentsSummary,
+    },
+  };
+
+  writeFileSync(join(dir, 'run.json'), JSON.stringify(run, null, 2));
+  return { id, dir, signalsDir, plansDir };
+}
+
+/**
+ * Approve a proposal: write the frozen YAML as the project's live
+ * `.dmux-agents.yml` and set `started_at` on the run record. After this,
+ * the run is in the same state as one created by `createRun` — bash can
+ * adopt it via DMUX_ADOPT_RUN_ID and spawn agents against it.
+ *
+ * Idempotent: calling on an already-approved proposal is a no-op that
+ * returns { alreadyApproved: true }. Calling on an abandoned proposal
+ * throws — abandoning is terminal.
+ */
+export function approveProposal(projectPath, runId, now = new Date()) {
+  const run = readRunJson(projectPath, runId);
+  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (run.abandoned_at) {
+    throw new Error(`Cannot approve abandoned proposal: ${runId}`);
+  }
+  if (run.started_at) {
+    return { id: runId, ok: true, alreadyApproved: true };
+  }
+  if (!run.proposed_at) {
+    throw new Error(`Run ${runId} is not a proposal (no proposed_at timestamp)`);
+  }
+  // Write the frozen YAML as the live config the bash side will read.
+  writeFileSync(join(projectPath, '.dmux-agents.yml'), run.config.yaml);
+  run.started_at = now.toISOString();
+  writeFileSync(
+    join(projectPath, RUNS_DIR, runId, 'run.json'),
+    JSON.stringify(run, null, 2),
+  );
+  return { id: runId, ok: true };
+}
+
+/**
+ * Discard a proposal: set `abandoned_at` on the record. Worktrees were
+ * never created so nothing else to clean.
+ *
+ * Idempotent. Throws if called on a started run (use cleanup/stop instead).
+ */
+export function discardProposal(projectPath, runId, now = new Date()) {
+  const run = readRunJson(projectPath, runId);
+  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (run.started_at) {
+    throw new Error(`Cannot discard a started run: ${runId} (use stop or cleanup)`);
+  }
+  if (run.abandoned_at) {
+    return { id: runId, ok: true, alreadyDiscarded: true };
+  }
+  run.abandoned_at = now.toISOString();
+  writeFileSync(
+    join(projectPath, RUNS_DIR, runId, 'run.json'),
+    JSON.stringify(run, null, 2),
+  );
+  return { id: runId, ok: true };
 }
 
 /** Read run.json by id. Returns null if not found. */
@@ -108,8 +224,20 @@ export function readRun(projectPath, runId) {
   const run = readRunJson(projectPath, runId);
   if (!run) return null;
 
+  // For proposed/abandoned runs there are no signal files to read; agents
+  // are uniformly pending (proposed) or abandoned (discarded).
+  const isProposed = Boolean(run.proposed_at) && !run.started_at && !run.abandoned_at;
+  const isAbandoned = Boolean(run.abandoned_at);
+
   const signalsDir = join(projectPath, RUNS_DIR, runId, 'signals');
   const agents = run.config.agents.map((a) => {
+    if (isAbandoned) {
+      return { ...a, status: 'abandoned', exit_code: null, completed_at: null };
+    }
+    if (isProposed) {
+      return { ...a, status: 'pending', exit_code: null, completed_at: null };
+    }
+
     const signalPath = join(signalsDir, `${a.name}.done`);
     let agentStatus = 'pending';
     let exitCode = null;
@@ -143,7 +271,9 @@ export function readRun(projectPath, runId) {
 }
 
 function deriveRunStatus(run, agents) {
+  if (run.abandoned_at) return 'abandoned';
   if (run.cleaned_at) return 'cleaned';
+  if (run.proposed_at && !run.started_at) return 'proposed';
   if (agents.length === 0) return 'pending';
   if (agents.every((a) => a.status === 'completed')) return 'completed';
   if (agents.some((a) => a.status === 'failed')) return 'failed';
@@ -173,9 +303,11 @@ export function listRuns(projectPath) {
     .map((r) => ({
       id: r.id,
       project: r.project,
+      proposed_at: r.proposed_at ?? null,
       started_at: r.started_at,
       completed_at: r.completed_at,
       cleaned_at: r.cleaned_at,
+      abandoned_at: r.abandoned_at ?? null,
       trigger: r.trigger,
       status: r.status,
       agent_count: r.config.agents.length,
@@ -202,7 +334,14 @@ export function listAllRuns(projects) {
       // a single broken project directory.
     }
   }
-  merged.sort((a, b) => b.started_at.localeCompare(a.started_at));
+  merged.sort((a, b) => {
+    // Sort by the timestamp that represents the run's "begin moment" —
+    // started_at for normal runs, proposed_at for proposals (which have
+    // no started_at). Same ISO string ordering applies.
+    const aT = a.started_at ?? a.proposed_at ?? '';
+    const bT = b.started_at ?? b.proposed_at ?? '';
+    return bT.localeCompare(aT);
+  });
   return merged;
 }
 

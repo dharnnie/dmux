@@ -259,6 +259,7 @@ function formatTrigger(t) {
   if (!t) return 'Manual';
   if (t.type === 'skill') return `Skill: ${t.skill_name ?? '?'}`;
   if (t.type === 'nl') return `NL: ${t.prompt ?? '?'}`;
+  if (t.type === 'adopt') return 'Adopted from disk';
   return 'Manual';
 }
 
@@ -300,7 +301,10 @@ function formatAgentDuration(run, a) {
 function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
   const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | null
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const prompt = run.trigger?.prompt ?? null;
+  const triggerType = run.trigger?.type ?? null;
+  const isAdopt = triggerType === 'adopt';
+  const adoptedPath = isAdopt ? run.trigger?.adoptedPath ?? null : null;
+  const prompt = !isAdopt ? run.trigger?.prompt ?? null : null;
 
   const callAction = async (action, path, successMessage, onSuccess) => {
     setBusy(action);
@@ -336,6 +340,20 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
           </div>
         </div>
       </header>
+
+      {isAdopt && (
+        <div className={styles.adoptBanner} role="status">
+          <span className={styles.adoptGlyph} aria-hidden="true">⌂</span>
+          <div className={styles.adoptBody}>
+            <div className={styles.adoptHeadline}>
+              Adopted from <code>{adoptedPath ?? '(path unavailable)'}</code>
+            </div>
+            <div className={styles.adoptHint}>
+              <code>CLAUDE.md</code> was written or updated with discovered context. Review the starter team below.
+            </div>
+          </div>
+        </div>
+      )}
 
       {prompt && (
         <Card header={<CardTitle>Your request</CardTitle>}>

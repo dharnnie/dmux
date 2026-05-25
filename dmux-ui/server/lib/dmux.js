@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { homedir } from 'os';
 import { join, relative } from 'path';
 import { WebSocketServer } from 'ws';
+import yaml from 'js-yaml';
 import { loadAgentsConfig as loadAgentsConfigParsedFromCore, ConfigError } from '../../../dmux-core/src/config.js';
 import {
   listRuns as listRunsFromCore,
@@ -1019,6 +1020,144 @@ function notFound(msg) {
   const e = new Error(msg);
   e.status = 404;
   return e;
+}
+
+/**
+ * Apply user customizations to a proposal: rename agents (with depends_on
+ * rewrites) and/or override per-agent models. Server-side YAML rewrite via
+ * js-yaml — load to a plain object, mutate, dump back, validate via
+ * dmux-core's parseAgentsConfig, then updateProposal in place.
+ *
+ * renames: [{ from, to }]            — rename agents (no-op when from === to)
+ * modelOverrides: [{ agent, model }] — set model on the named agent; keyed
+ *                                       by ORIGINAL name (pre-rename)
+ *
+ * Throws with .status on validation problems so the route handler maps
+ * cleanly to HTTP codes. Atomic: any single failure aborts before
+ * updateProposal is called, so the persisted proposal is never partially
+ * updated.
+ */
+export function customizeProposal(projectPath, proposalId, { renames = [], modelOverrides = [] } = {}) {
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  if (run.status !== 'proposed') {
+    throw conflict(`Proposal ${proposalId} is no longer in 'proposed' state`);
+  }
+
+  // Build maps and validate against the current proposal up front.
+  const currentNames = new Set(run.config.agents.map((a) => a.name));
+  const renameMap = new Map();
+  const newNamesUsed = new Set();
+  for (const r of renames) {
+    if (!r || typeof r.from !== 'string' || typeof r.to !== 'string') {
+      throw badRequest('renames entries need string `from` and `to`');
+    }
+    const from = r.from.trim();
+    const to = r.to.trim();
+    if (!from || !to) throw badRequest('rename names cannot be empty');
+    if (from === to) continue;
+    if (!currentNames.has(from)) {
+      throw badRequest(`Cannot rename '${from}' — no such agent in this proposal`);
+    }
+    if (renameMap.has(from)) {
+      throw badRequest(`Duplicate rename for agent '${from}'`);
+    }
+    // Collision detection: the new name can't already be a current agent
+    // name (unless that agent is also being renamed away) or another rename's
+    // target.
+    if (newNamesUsed.has(to)) {
+      throw badRequest(`Rename collision — multiple agents would end up named '${to}'`);
+    }
+    if (currentNames.has(to) && !renames.some((x) => x.from === to && x.from !== to)) {
+      throw badRequest(`Rename collision — '${to}' is already an agent`);
+    }
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(to)) {
+      throw badRequest(`'${to}' is not a valid agent name (use A-Z, a-z, 0-9, _, - up to 32 chars)`);
+    }
+    renameMap.set(from, to);
+    newNamesUsed.add(to);
+  }
+
+  const modelMap = new Map();
+  for (const m of modelOverrides) {
+    if (!m || typeof m.agent !== 'string' || typeof m.model !== 'string') {
+      throw badRequest('modelOverrides entries need string `agent` and `model`');
+    }
+    const agent = m.agent.trim();
+    const model = m.model.trim();
+    if (!currentNames.has(agent)) {
+      throw badRequest(`Cannot override model on '${agent}' — no such agent in this proposal`);
+    }
+    if (modelMap.has(agent)) {
+      throw badRequest(`Duplicate model override for agent '${agent}'`);
+    }
+    modelMap.set(agent, model);
+  }
+
+  if (renameMap.size === 0 && modelMap.size === 0) {
+    // No-op; just return the current state without round-tripping the YAML.
+    return { ok: true, proposalId };
+  }
+
+  // Load, mutate, dump.
+  let doc;
+  try {
+    doc = yaml.load(run.config.yaml);
+  } catch (e) {
+    throw new Error(`Could not parse current proposal YAML: ${e.message}`);
+  }
+  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.agents)) {
+    throw new Error('Current proposal YAML is not in the expected shape');
+  }
+
+  // Apply renames + model overrides.
+  for (const agent of doc.agents) {
+    if (!agent || typeof agent !== 'object') continue;
+    const original = typeof agent.name === 'string' ? agent.name : null;
+    if (original && modelMap.has(original)) {
+      agent.model = modelMap.get(original);
+    }
+    if (original && renameMap.has(original)) {
+      agent.name = renameMap.get(original);
+    }
+  }
+  // Update depends_on references on all agents.
+  for (const agent of doc.agents) {
+    if (!agent || typeof agent !== 'object') continue;
+    if (Array.isArray(agent.depends_on)) {
+      agent.depends_on = agent.depends_on.map((dep) =>
+        typeof dep === 'string' && renameMap.has(dep) ? renameMap.get(dep) : dep,
+      );
+    } else if (typeof agent.depends_on === 'string' && renameMap.has(agent.depends_on)) {
+      agent.depends_on = renameMap.get(agent.depends_on);
+    }
+  }
+
+  const newYaml = yaml.dump(doc, { lineWidth: 100, noRefs: true });
+
+  // Validate the rewrite before persisting.
+  let parsed;
+  try {
+    parsed = parseAgentsConfigFromCore(newYaml);
+  } catch (e) {
+    throw new Error(`Customize produced invalid YAML: ${e.message}`);
+  }
+
+  const agentsSummary = parsed.agents.map((a) => ({
+    name: a.name,
+    role: a.role,
+    branch: a.branch || '',
+    model: a.model || null,
+    provider: a.provider || parsed.provider || 'claude',
+    depends_on: a.depends_on || [],
+  }));
+
+  updateProposalFromCore(projectPath, proposalId, {
+    configYaml: newYaml,
+    agentsSummary,
+  });
+
+  return { ok: true, proposalId };
 }
 
 /**

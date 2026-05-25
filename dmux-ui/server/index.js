@@ -40,6 +40,7 @@ import {
   readProposalChat,
   runProposalChat,
   regenerateProposalFromChat,
+  customizeProposal,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -468,6 +469,29 @@ app.post('/api/projects/:name/runs/:proposalId/regenerate', async (req, res) => 
     if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
     if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
     if (/validation|did not contain/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Apply user customizations (agent renames + per-agent model overrides) to a
+// proposal. Body: { renames: [{from,to}], modelOverrides: [{agent,model}] }.
+// Server-side YAML rewrite (rewrites depends_on references on rename), then
+// validates and persists via dmux-core's updateProposal.
+app.post('/api/projects/:name/runs/:proposalId/customize', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const renames = Array.isArray(req.body?.renames) ? req.body.renames : [];
+    const modelOverrides = Array.isArray(req.body?.modelOverrides) ? req.body.modelOverrides : [];
+    const result = customizeProposal(project.path, req.params.proposalId, { renames, modelOverrides });
+    res.json(result);
+  } catch (e) {
+    const status = e?.status;
+    const msg = e?.message ?? String(e);
+    if (status) return res.status(status).json({ error: msg });
+    if (/produced invalid YAML|expected shape/i.test(msg)) return res.status(422).json({ error: msg });
     res.status(500).json({ error: msg });
   }
 });

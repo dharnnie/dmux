@@ -119,7 +119,15 @@ export async function approveAndLaunchProposal(projectPath, projectName, runId) 
   // The user can interact with the running session — no further launch needed.
   if (result.alreadyApproved) return { ...result, launched: false };
 
-  await execDmux(`agents start ${projectName} -y`, { DMUX_ADOPT_RUN_ID: runId });
+  try {
+    await execDmux(`agents start ${projectName} -y`, { DMUX_ADOPT_RUN_ID: runId });
+  } catch (rej) {
+    // execDmux rejects with a plain { error, stderr, stdout } object rather
+    // than an Error — repackage so callers see a useful message instead of
+    // "[object Object]".
+    const detail = rej?.stderr?.trim() || rej?.stdout?.trim() || rej?.error || String(rej);
+    throw new Error(`Approved run ${runId} (config written) but agent launch failed: ${detail.slice(0, 500)}`);
+  }
   return { ...result, launched: true };
 }
 
@@ -290,6 +298,7 @@ function buildPlannerPrompt(ctx, userPrompt, retryError) {
     `- Emit exactly one fenced \`\`\`yaml code block. No prose outside it.`,
     `- Use the dmux schema: top-level \`session\`, \`worktree_base\`, \`main_pane\`, and \`agents:\` (a list).`,
     `- Each agent needs: name, role (plan|build|review|research), branch, task, model, scope (list of paths it may modify), context (list of paths it may read), depends_on (list of agent names).`,
+    `- EVERY agent — including plan-role and review-role agents — MUST have a unique \`branch:\` value. dmux creates a git worktree per agent; an agent without a branch fails to launch. Use a descriptive prefix per role: plan/<topic>, feat/<topic>, review/<topic>.`,
     `- The \`model\` field MUST be exactly one of these three short aliases: \`opus\`, \`sonnet\`, \`haiku\`. Do NOT use fully-qualified ids like \`claude-sonnet-4-6\` or \`claude-opus-4-7\` — the schema rejects them.`,
     `- Pick models thoughtfully: sonnet for planners and reviewers; opus for builders on complex work; haiku only when speed beats quality.`,
     `- Declare a tight \`scope\` for every build agent. Be specific — list directories or files. Scope is enforced.`,

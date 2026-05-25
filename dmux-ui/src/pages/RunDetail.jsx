@@ -7,6 +7,7 @@ import Tabs from '../components/Tabs';
 import { ConfirmDialog } from '../components/Sheet';
 import { useToast } from '../components/Toasts';
 import ProposalChat from '../components/ProposalChat';
+import RecommendedSkillsCard from '../components/RecommendedSkillsCard';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -265,13 +266,21 @@ function formatTrigger(t) {
   return 'Manual';
 }
 
-function ReviewTabContent({ run, prompt }) {
+function ReviewTabContent({ run, prompt, recommendedSkills }) {
+  const [dismissedRecs, setDismissedRecs] = useState(false);
   return (
     <>
       {prompt && (
         <Card header={<CardTitle>Your request</CardTitle>}>
           <blockquote className={styles.prompt}>{prompt}</blockquote>
         </Card>
+      )}
+
+      {recommendedSkills.length > 0 && !dismissedRecs && (
+        <RecommendedSkillsCard
+          recommendations={recommendedSkills}
+          onDismiss={() => setDismissedRecs(true)}
+        />
       )}
 
       <Card header={<CardTitle>Proposed agents</CardTitle>}>
@@ -411,7 +420,11 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
           onChange={setTab}
         >
           {tab === 'review' && (
-            <ReviewTabContent run={run} prompt={prompt} />
+            <ReviewTabContent
+              run={run}
+              prompt={prompt}
+              recommendedSkills={run.trigger?.recommendedSkills ?? []}
+            />
           )}
           {tab === 'chat' && (
             <ProposalChat
@@ -422,7 +435,7 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
           )}
         </Tabs>
       ) : (
-        <ReviewTabContent run={run} prompt={prompt} />
+        <ReviewTabContent run={run} prompt={prompt} recommendedSkills={[]} />
       )}
 
       <div className={styles.proposalActions}>

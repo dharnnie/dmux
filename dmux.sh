@@ -2289,6 +2289,203 @@ handle_skills_command() {
   esac
 }
 
+# ------------------------------------------------------------------------------
+# `dmux adopt` (Wave 2C Slice 3)
+#
+# Thin wrapper around POST /api/adopt. Requires the dmux UI server to be
+# running locally (start with `dmux ui` in another tab). Polls
+# /api/adopt/progress/:correlationId during the long discovery call so the
+# user sees stage transitions in the terminal.
+#
+# This pattern (CLI shells curl to the local HTTP API) was chosen over a
+# new dmux-core binary subcommand for v1 — see wave-2c.md §6.4. If users
+# complain about the server-running requirement we'll revisit.
+# ------------------------------------------------------------------------------
+
+adopt_usage() {
+  cat << EOF
+Usage: dmux adopt <path> [--name <name>]
+
+Adopt an existing git repository as a dmux project. Registers the project,
+runs a discovery agent against the repo, writes/merges CLAUDE.md, and
+stages a starter team as a proposal for you to review.
+
+Requires the dmux UI server to be running (start with 'dmux ui').
+
+Arguments:
+  <path>          Path to the git repository
+  --name <name>   Project name (defaults to the directory basename)
+
+Exit codes:
+  0 — success
+  1 — usage error / server unreachable / network failure
+  2 — path validation failed (does not exist, not a directory, or no .git)
+  3 — project name conflict
+  4 — discovery failed (unparseable output, timeout, or claude CLI missing)
+EOF
+}
+
+handle_adopt_command() {
+  local path=""
+  local name=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name)
+        [[ -z "${2:-}" ]] && { echo "Error: --name requires a value" >&2; return 1; }
+        name="$2"
+        shift 2
+        ;;
+      -h|--help)
+        adopt_usage
+        return 0
+        ;;
+      -*)
+        echo "Error: Unknown option '$1'" >&2
+        adopt_usage >&2
+        return 1
+        ;;
+      *)
+        if [[ -n "$path" ]]; then
+          echo "Error: unexpected argument '$1'" >&2
+          return 1
+        fi
+        path="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$path" ]]; then
+    adopt_usage >&2
+    return 1
+  fi
+
+  # Make path absolute so the server's "must be absolute" check passes
+  # transparently when users pass a relative path from a shell.
+  if [[ "${path:0:1}" != "/" ]]; then
+    local abs
+    abs=$(cd "$path" 2>/dev/null && pwd) || {
+      echo "Error: path does not exist or is not accessible: $path" >&2
+      return 2
+    }
+    path="$abs"
+  fi
+
+  if [[ ! -d "$path" ]]; then
+    echo "Error: path is not a directory: $path" >&2
+    return 2
+  fi
+  if [[ ! -d "$path/.git" ]]; then
+    echo "Error: path is not a git repository: $path" >&2
+    return 2
+  fi
+
+  require_command "curl" "calling the dmux UI server" || return 1
+  require_command "python3" "parsing JSON responses" || return 1
+
+  local server_url="${DMUX_UI_URL:-http://localhost:3100}"
+  if ! curl -sf --max-time 2 "$server_url/api/projects" >/dev/null 2>&1; then
+    echo "Error: dmux UI server not reachable at $server_url" >&2
+    echo "  Start it in another tab: dmux ui" >&2
+    return 1
+  fi
+
+  local cid
+  if command -v uuidgen >/dev/null 2>&1; then
+    cid="$(uuidgen)"
+  else
+    cid="adopt-$(date +%s)-$RANDOM"
+  fi
+
+  local body
+  if [[ -n "$name" ]]; then
+    body=$(printf '{"path":"%s","name":"%s","correlationId":"%s"}' "$path" "$name" "$cid")
+  else
+    body=$(printf '{"path":"%s","correlationId":"%s"}' "$path" "$cid")
+  fi
+
+  local display_name="${name:-$(basename "$path")}"
+  echo "Adopting $path as \"$display_name\"…"
+
+  local resp_file code_file
+  resp_file="$(mktemp)"
+  code_file="$(mktemp)"
+  trap "rm -f '$resp_file' '$code_file'" EXIT INT TERM
+
+  (
+    curl -s -o "$resp_file" --max-time 240 \
+      -w "%{http_code}" \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -d "$body" \
+      "$server_url/api/adopt" > "$code_file"
+  ) &
+  local curl_pid=$!
+
+  # Poll progress while curl runs. One-second cadence matches the UI.
+  local last_stage=""
+  while kill -0 "$curl_pid" 2>/dev/null; do
+    sleep 1
+    local stage
+    stage=$(curl -sf --max-time 2 "$server_url/api/adopt/progress/$cid" 2>/dev/null \
+      | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("stage", ""))
+except Exception: print("")' 2>/dev/null)
+    if [[ -n "$stage" && "$stage" != "$last_stage" ]]; then
+      case "$stage" in
+        validating)        echo "  · Validating path" ;;
+        registering)       echo "  ✓ Registered project" ;;
+        discovering)       echo "  · Discovery agent reading repo (30-60s)…" ;;
+        writing-claude-md) echo "  ✓ Discovery complete" ;;
+        creating-proposal) echo "  · Writing CLAUDE.md and staging starter team" ;;
+        done)              ;;  # printed below with the URL
+        error)             ;;  # detail comes from the response body
+      esac
+      last_stage="$stage"
+    fi
+  done
+
+  wait "$curl_pid"
+  local code resp
+  code=$(cat "$code_file")
+  resp=$(cat "$resp_file")
+  rm -f "$resp_file" "$code_file"
+  trap - EXIT INT TERM
+
+  if [[ "$code" != "200" ]]; then
+    local err
+    err=$(printf '%s' "$resp" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("error", "unknown error"))
+except Exception: print(sys.stdin.read()[:300] or "(no body)")' 2>/dev/null)
+    echo "" >&2
+    echo "Error (HTTP $code): $err" >&2
+    case "$code" in
+      400) return 2 ;;
+      409) return 3 ;;
+      422|503|504) return 4 ;;
+      *)   return 1 ;;
+    esac
+  fi
+
+  local pname pid merged
+  pname=$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["projectName"])' 2>/dev/null)
+  pid=$(printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["proposalId"])' 2>/dev/null)
+  merged=$(printf '%s' "$resp" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("mergedExistingClaudeMd") else "false")' 2>/dev/null)
+
+  echo "  ✓ Done"
+  echo ""
+  if [[ "$merged" == "true" ]]; then
+    echo "Adopted as \"$pname\" — existing CLAUDE.md was preserved (only the dmux:discovered block was updated)."
+  else
+    echo "Adopted as \"$pname\" — CLAUDE.md created."
+  fi
+  echo ""
+  echo "Review the starter team:"
+  echo "  $server_url/projects/$pname/runs/$pid"
+  return 0
+}
+
 usage() {
   cat << EOF
 dmux v$VERSION - Launch development environments with tmux + AI coding agents
@@ -2297,6 +2494,7 @@ USAGE:
   $(basename "$0") -p project1,project2    Launch projects
   $(basename "$0") agents <action>         Multi-agent orchestration
   $(basename "$0") skills <action>         Install and run reusable agent skills
+  $(basename "$0") adopt <path>            Adopt an existing repo into dmux
   $(basename "$0") screenshot               Paste clipboard image into a tmux pane
   $(basename "$0") ui                      Open the local web UI
   $(basename "$0") update                  Self-update to latest version
@@ -2589,6 +2787,7 @@ fi
 case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
   skills) shift; handle_skills_command "$@"; exit $? ;;
+  adopt)  shift; handle_adopt_command "$@"; exit $? ;;
   screenshot) shift; handle_screenshot_command "$@"; exit $? ;;
   update) dmux_update; exit $? ;;
   ui)

@@ -8,6 +8,7 @@ import { ConfirmDialog } from '../components/Sheet';
 import { useToast } from '../components/Toasts';
 import ProposalChat from '../components/ProposalChat';
 import RecommendedSkillsCard from '../components/RecommendedSkillsCard';
+import CustomizePanel from '../components/CustomizePanel';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -353,8 +354,9 @@ function formatAgentDuration(run, a) {
 // ---------------------------------------------------------------------------
 
 function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
-  const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | null
+  const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | 'customize-approve' | null
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [customizing, setCustomizing] = useState(false);
   const [tab, setTab] = useState('review');
   const triggerType = run.trigger?.type ?? null;
   const isAdopt = triggerType === 'adopt';
@@ -373,6 +375,38 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
       onSuccess?.(body);
     } catch (e) {
       toast(`Couldn't ${action}: ${e.message}`, 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Customize-then-approve: POST customize first, then approve. The
+  // customize endpoint validates renames + model overrides server-side
+  // and rewrites depends_on references; on its success we run the same
+  // approve path the regular button uses.
+  const handleCustomizeAndApprove = async ({ renames, modelOverrides }) => {
+    setBusy('customize-approve');
+    try {
+      const customizeRes = await fetch(`/api/projects/${name}/runs/${runId}/customize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renames, modelOverrides }),
+      });
+      const customizeBody = await customizeRes.json().catch(() => ({}));
+      if (!customizeRes.ok) throw new Error(customizeBody.error || `HTTP ${customizeRes.status}`);
+
+      // Customizations persisted. Now approve via the existing endpoint.
+      const approveRes = await fetch(`/api/projects/${name}/proposals/${runId}/approve`, {
+        method: 'POST',
+      });
+      const approveBody = await approveRes.json().catch(() => ({}));
+      if (!approveRes.ok) throw new Error(approveBody.error || `HTTP ${approveRes.status}`);
+
+      toast('Customized & approved — agents starting.', 'success');
+      setCustomizing(false);
+      onChange();
+    } catch (e) {
+      toast(`Customize & approve failed: ${e.message}`, 'error');
     } finally {
       setBusy(null);
     }
@@ -438,45 +472,61 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
         <ReviewTabContent run={run} prompt={prompt} recommendedSkills={[]} />
       )}
 
-      <div className={styles.proposalActions}>
-        <Button
-          variant="primary"
-          onClick={() =>
-            callAction('approve', 'approve', 'Approved — agents starting.', () => {
-              // The next poll picks up the status flip; we also trigger a
-              // refresh so the user sees the running view immediately.
-              onChange();
-            })
-          }
-          loading={busy === 'approve'}
-          disabled={busy !== null}
-        >
-          Approve & Run
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() =>
-            callAction(
-              'edit',
-              'promote-to-edit',
-              'Loaded into the editor — tweak then start a run.',
-              () => navigate(`/projects/${name}/agents`),
-            )
-          }
-          loading={busy === 'edit'}
-          disabled={busy !== null}
-        >
-          Edit before running
-        </Button>
-        <span className={styles.proposalSpacer} />
-        <Button
-          variant="danger"
-          onClick={() => setConfirmDiscard(true)}
-          disabled={busy !== null}
-        >
-          Discard
-        </Button>
-      </div>
+      {customizing ? (
+        <CustomizePanel
+          agents={run.agents}
+          submitting={busy === 'customize-approve'}
+          onSubmit={handleCustomizeAndApprove}
+          onCancel={() => setCustomizing(false)}
+        />
+      ) : (
+        <div className={styles.proposalActions}>
+          <Button
+            variant="primary"
+            onClick={() =>
+              callAction('approve', 'approve', 'Approved — agents starting.', () => {
+                // The next poll picks up the status flip; we also trigger a
+                // refresh so the user sees the running view immediately.
+                onChange();
+              })
+            }
+            loading={busy === 'approve'}
+            disabled={busy !== null}
+          >
+            Approve & Run
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setCustomizing(true)}
+            disabled={busy !== null}
+          >
+            Customize & Run
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              callAction(
+                'edit',
+                'promote-to-edit',
+                'Loaded into the editor — tweak then start a run.',
+                () => navigate(`/projects/${name}/agents`),
+              )
+            }
+            loading={busy === 'edit'}
+            disabled={busy !== null}
+          >
+            Edit before running
+          </Button>
+          <span className={styles.proposalSpacer} />
+          <Button
+            variant="danger"
+            onClick={() => setConfirmDiscard(true)}
+            disabled={busy !== null}
+          >
+            Discard
+          </Button>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmDiscard}

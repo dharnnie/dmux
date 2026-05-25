@@ -290,6 +290,7 @@ function buildPlannerPrompt(ctx, userPrompt, retryError) {
     `- Emit exactly one fenced \`\`\`yaml code block. No prose outside it.`,
     `- Use the dmux schema: top-level \`session\`, \`worktree_base\`, \`main_pane\`, and \`agents:\` (a list).`,
     `- Each agent needs: name, role (plan|build|review|research), branch, task, model, scope (list of paths it may modify), context (list of paths it may read), depends_on (list of agent names).`,
+    `- The \`model\` field MUST be exactly one of these three short aliases: \`opus\`, \`sonnet\`, \`haiku\`. Do NOT use fully-qualified ids like \`claude-sonnet-4-6\` or \`claude-opus-4-7\` — the schema rejects them.`,
     `- Pick models thoughtfully: sonnet for planners and reviewers; opus for builders on complex work; haiku only when speed beats quality.`,
     `- Declare a tight \`scope\` for every build agent. Be specific — list directories or files. Scope is enforced.`,
     ``,

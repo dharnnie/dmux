@@ -233,6 +233,37 @@ agents:
 `;
       expect(() => parseAgentsConfig(yaml)).toThrow(/must be one of/);
     });
+
+    it('normalizes fully-qualified Claude model ids to short aliases', () => {
+      const cases = [
+        ['claude-opus-4-7', 'opus'],
+        ['claude-sonnet-4-6', 'sonnet'],
+        ['claude-haiku-4-5-20251001', 'haiku'],
+        ['CLAUDE-OPUS-5', 'opus'],
+      ];
+      for (const [input, expected] of cases) {
+        const yaml = `
+session: s
+agents:
+  - name: a
+    task: t
+    model: ${input}
+`;
+        expect(parseAgentsConfig(yaml).agents[0].model).toBe(expected);
+      }
+    });
+
+    it('normalizes fully-qualified Gemini model ids to short aliases', () => {
+      const yaml = `
+session: s
+provider: gemini
+agents:
+  - name: a
+    task: t
+    model: gemini-2.5-pro
+`;
+      expect(parseAgentsConfig(yaml).agents[0].model).toBe('pro');
+    });
   });
 
   describe('providers', () => {

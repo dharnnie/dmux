@@ -377,6 +377,357 @@ function execClaude(stdinText) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// `dmux adopt` (Wave 2C) — discovery agent + CLAUDE.md merge + adoption
+// orchestrator. UI flow lands in Slice 2; CLI in Slice 3.
+// ---------------------------------------------------------------------------
+
+const DISCOVERY_MODEL = 'sonnet';
+const DISCOVERY_TIMEOUT_MS = 180_000;
+const DISCOVERY_MANIFEST_FILES = [
+  'package.json', 'pyproject.toml', 'setup.py', 'requirements.txt',
+  'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'composer.json',
+  'Gemfile', 'mix.exs',
+];
+const DISCOVERY_MAX_MANIFEST_SIZE = 50_000;
+const DISCOVERY_MAX_README_SIZE = 30_000;
+
+const CLAUDE_MD_MARKER_START = '<!-- dmux:discovered start -->';
+const CLAUDE_MD_MARKER_END = '<!-- dmux:discovered end -->';
+
+// In-memory progress map. Keys are correlationIds the client passes in.
+// Entries get cleaned ADOPTION_JOB_TTL_MS after entering a terminal state
+// so a polling client that gives up doesn't leak forever.
+const adoptionJobs = new Map();
+const ADOPTION_JOB_TTL_MS = 10 * 60 * 1000;
+
+function setAdoptionStage(correlationId, stage, extra = {}) {
+  if (!correlationId) return;
+  const prev = adoptionJobs.get(correlationId) ?? {};
+  const next = { ...prev, ...extra, stage, updatedAt: Date.now() };
+  adoptionJobs.set(correlationId, next);
+  if (stage === 'done' || stage === 'error') {
+    setTimeout(() => adoptionJobs.delete(correlationId), ADOPTION_JOB_TTL_MS).unref?.();
+  }
+}
+
+export function getAdoptionProgress(correlationId) {
+  return adoptionJobs.get(correlationId) ?? null;
+}
+
+/**
+ * Top-level adopt orchestrator. Validates path → registers project →
+ * runs discovery → writes CLAUDE.md → stages a starter team as a proposal.
+ *
+ * When correlationId is provided, stage transitions are written to the
+ * adoptionJobs map so the UI can poll /api/adopt/progress/:correlationId.
+ */
+export async function runAdoption(rawPath, providedName, correlationId = null) {
+  try {
+    setAdoptionStage(correlationId, 'validating');
+
+    if (typeof rawPath !== 'string' || rawPath.trim().length === 0) {
+      throw badRequest('path is required');
+    }
+    const path = rawPath.trim();
+    if (!path.startsWith('/')) {
+      throw badRequest('path must be absolute');
+    }
+    if (!existsSync(path)) {
+      throw badRequest(`path does not exist: ${path}`);
+    }
+    if (!existsSync(join(path, '.git'))) {
+      throw badRequest(`path is not a git repository: ${path}`);
+    }
+
+    const name = (providedName && providedName.trim()) || path.split('/').filter(Boolean).pop() || '';
+    if (!name) throw badRequest('could not derive project name from path; pass a name');
+
+    const existing = parseProjectsFile();
+    const existingForName = existing.find((p) => p.name === name);
+    if (existingForName && existingForName.path !== path) {
+      throw conflict(`project name '${name}' is already registered at a different path: ${existingForName.path}`);
+    }
+
+    setAdoptionStage(correlationId, 'registering', { projectName: name });
+    if (!existingForName) {
+      addProject(name, path);
+    }
+
+    setAdoptionStage(correlationId, 'discovering');
+    const { claudeMdContent, agentsYaml } = await runDiscovery(path, name);
+
+    setAdoptionStage(correlationId, 'writing-claude-md');
+    const claudeResult = writeClaudeMd(path, claudeMdContent);
+
+    setAdoptionStage(correlationId, 'creating-proposal');
+    const parsed = parseAgentsConfigFromCore(agentsYaml);
+    const agentsSummary = parsed.agents.map((a) => ({
+      name: a.name,
+      role: a.role,
+      branch: a.branch || '',
+      model: a.model || null,
+      provider: a.provider || parsed.provider || 'claude',
+      depends_on: a.depends_on || [],
+    }));
+    const { id: proposalId } = createProposalFromCore(path, {
+      trigger: { type: 'adopt', adoptedPath: path },
+      configYaml: agentsYaml,
+      agentsSummary,
+    });
+
+    setAdoptionStage(correlationId, 'done', {
+      projectName: name,
+      proposalId,
+      mergedExistingClaudeMd: claudeResult.merged,
+    });
+
+    return {
+      projectName: name,
+      proposalId,
+      mergedExistingClaudeMd: claudeResult.merged,
+    };
+  } catch (e) {
+    setAdoptionStage(correlationId, 'error', { error: e?.message ?? String(e) });
+    throw e;
+  }
+}
+
+// Status-tagged errors so the route handler can map cleanly without
+// pattern-matching error message text.
+function badRequest(msg) {
+  const e = new Error(msg);
+  e.status = 400;
+  return e;
+}
+function conflict(msg) {
+  const e = new Error(msg);
+  e.status = 409;
+  return e;
+}
+
+/**
+ * Run the discovery agent: shells `claude` with a structured prompt built
+ * from the project's file tree, README, manifest files, and any existing
+ * CLAUDE.md / .dmux-agents.yml. Extracts two fenced blocks (claude-md,
+ * yaml). Retries once on missing-block or schema-validation failure.
+ */
+async function runDiscovery(projectPath, projectName) {
+  const ctx = buildDiscoveryContext(projectPath, projectName);
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const prompt = buildDiscoveryPrompt(ctx, lastError);
+    const response = await execClaudeWithTimeout(prompt, DISCOVERY_MODEL, DISCOVERY_TIMEOUT_MS);
+    const claudeMd = extractFencedBlock(response, 'claude-md');
+    const yamlText = extractFencedBlock(response, ['yaml', 'yml']);
+
+    if (!claudeMd) {
+      lastError = 'Your previous response did not contain a ```claude-md fenced block. Emit one.';
+      if (attempt === 2) throw new Error('Discovery produced no claude-md block after retry.');
+      continue;
+    }
+    if (!yamlText) {
+      lastError = 'Your previous response did not contain a ```yaml fenced block. Emit one.';
+      if (attempt === 2) throw new Error('Discovery produced no yaml block after retry.');
+      continue;
+    }
+    try {
+      parseAgentsConfigFromCore(yamlText);
+      return { claudeMdContent: claudeMd, agentsYaml: yamlText };
+    } catch (e) {
+      lastError = `Your previous YAML was rejected by the schema validator: ${e.message}. Fix and re-emit.`;
+      if (attempt === 2) {
+        throw new Error(`Discovery output failed validation after retry: ${e.message}`);
+      }
+    }
+  }
+}
+
+function buildDiscoveryContext(projectPath, projectName) {
+  const readmeCandidates = ['README.md', 'README', 'readme.md'];
+  const readmePath = readmeCandidates.map((f) => join(projectPath, f)).find((p) => existsSync(p));
+  const readme = readmePath ? safeReadFileSized(readmePath, DISCOVERY_MAX_README_SIZE) : null;
+
+  const manifests = [];
+  for (const fname of DISCOVERY_MANIFEST_FILES) {
+    if (manifests.length >= 5) break;
+    const p = join(projectPath, fname);
+    if (!existsSync(p)) continue;
+    const content = safeReadFileSized(p, DISCOVERY_MAX_MANIFEST_SIZE);
+    if (content !== null) manifests.push({ name: fname, content });
+  }
+
+  return {
+    projectName,
+    fileTree: summarizeFileTree(projectPath),
+    readme,
+    manifests,
+    existingClaudeMd: safeReadFile(join(projectPath, 'CLAUDE.md')),
+    existingAgentsYaml: safeReadFile(join(projectPath, '.dmux-agents.yml')),
+  };
+}
+
+function safeReadFileSized(path, maxBytes) {
+  try {
+    if (!existsSync(path)) return null;
+    const stat = statSync(path);
+    if (stat.size > maxBytes) return null;
+    return readFileSync(path, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+function buildDiscoveryPrompt(ctx, retryError) {
+  const sections = [
+    `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit two artifacts: an updated CLAUDE.md and a starter .dmux-agents.yml.`,
+    ``,
+    `Output format: exactly two fenced code blocks, in this order:`,
+    `1. A \`\`\`claude-md fenced block`,
+    `2. A \`\`\`yaml fenced block`,
+    `Plus one short paragraph OUTSIDE both blocks summarizing what you found and what kind of starter team you proposed.`,
+    ``,
+    `### CLAUDE.md rules`,
+    `- Wrap your CLAUDE.md output in these HTML-comment markers (literal, on their own lines):`,
+    `    ${CLAUDE_MD_MARKER_START}`,
+    `    ...your content...`,
+    `    ${CLAUDE_MD_MARKER_END}`,
+    `- Include only sections you have evidence for: Project Overview, Stack, Layout, Commands (build/test/lint/run), Conventions.`,
+    `- Cite real evidence ("Express routes live under \`src/routes/\` (5 files detected)"), not generic templates.`,
+    `- Do NOT include sections you can't ground in the files you saw.`,
+    ``,
+    `### .dmux-agents.yml rules`,
+    `- One fenced \`\`\`yaml block, valid against dmux's schema.`,
+    `- Top-level: session, worktree_base, main_pane, agents (a list).`,
+    `- Each agent: name, role (plan|build|review|research), branch, task, model, scope (list of paths it may modify), context (list of paths it may read), depends_on (list of agent names).`,
+    `- EVERY agent including plan/review needs a unique \`branch:\` value. Use prefixes: plan/<topic>, feat/<topic>, review/<topic>.`,
+    `- \`model\` must be exactly one of: \`opus\`, \`sonnet\`, \`haiku\`. Do NOT use fully-qualified ids like \`claude-sonnet-4-6\`.`,
+    `- Pick models thoughtfully: sonnet for plan/review; opus for complex build; haiku only when speed beats quality.`,
+    ``,
+    `### Starter-team guidance`,
+    `The user hasn't asked for anything yet — they just adopted the repo. Propose a low-stakes "first task" they can either approve immediately to dogfood dmux on this project, or use as a template.`,
+    `Good defaults:`,
+    `- A single plan-role agent that writes \`docs/project-tour.md\` summarizing the codebase. Useful for any project.`,
+    `- Or, if the repo has obvious gaps (no tests, no CI, missing README), a 2-agent plan→build team that addresses one of them.`,
+    ``,
+    `Project: ${ctx.projectName}`,
+    ``,
+    `File tree:`,
+    '```\n' + (ctx.fileTree || '(empty)') + '\n```',
+    ``,
+    `README:`,
+    ctx.readme ? '```\n' + ctx.readme + '\n```' : '(none)',
+    ``,
+    `Manifest files:`,
+    ctx.manifests.length === 0
+      ? '(none detected)'
+      : ctx.manifests.map((m) => `**${m.name}**\n\`\`\`\n${m.content}\n\`\`\``).join('\n\n'),
+    ``,
+    `Existing CLAUDE.md:`,
+    ctx.existingClaudeMd ? '```\n' + ctx.existingClaudeMd + '\n```' : '(none — first adoption)',
+    ``,
+    `Existing .dmux-agents.yml:`,
+    ctx.existingAgentsYaml ? '```yaml\n' + ctx.existingAgentsYaml + '\n```' : '(none)',
+  ];
+  if (retryError) {
+    sections.push('', `IMPORTANT — this is a retry. ${retryError}`);
+  }
+  sections.push('', `Now emit the two artifacts.`);
+  return sections.join('\n');
+}
+
+/**
+ * Generalized fenced-block extractor. `label` may be a string ('yaml',
+ * 'claude-md') or an array of acceptable labels (['yaml', 'yml']).
+ * Returns the inner text of the first matching block, or null.
+ */
+function extractFencedBlock(text, label) {
+  const labels = Array.isArray(label) ? label : [label];
+  for (const l of labels) {
+    const pattern = new RegExp('```' + escapeRegex(l) + '\\s*\\n([\\s\\S]*?)\\n```', 'i');
+    const m = text.match(pattern);
+    if (m) return m[1].trim();
+  }
+  return null;
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Same as execClaude but with configurable model and timeout. The original
+ * planner-only execClaude stays as-is so PR 3's behavior is unchanged.
+ */
+function execClaudeWithTimeout(stdinText, model, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('claude', ['--model', model, '--print'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        reject(new Error('`claude` CLI not found on PATH. Adoption requires Claude Code installed (https://claude.com/claude-code).'));
+      } else {
+        reject(err);
+      }
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error(`Discovery timed out after ${timeoutMs / 1000}s.`));
+      if (code !== 0) return reject(new Error(`claude exited ${code}: ${(stderr || stdout).slice(0, 500)}`));
+      resolve(stdout);
+    });
+
+    child.stdin.write(stdinText);
+    child.stdin.end();
+  });
+}
+
+/**
+ * Write or merge a CLAUDE.md per Wave 2C §1.2:
+ * - No existing file → write content verbatim (wrap in markers if missing)
+ * - Existing with marker block → replace just the marker block
+ * - Existing without marker → append marker block at the bottom
+ *
+ * The discovery agent is instructed to wrap its output in markers, so the
+ * incoming `content` should arrive already wrapped. If it doesn't, we
+ * defensively wrap it before writing.
+ */
+export function writeClaudeMd(projectPath, content) {
+  const path = join(projectPath, 'CLAUDE.md');
+  let wrapped = content;
+  if (!wrapped.includes(CLAUDE_MD_MARKER_START)) {
+    wrapped = `${CLAUDE_MD_MARKER_START}\n${content.trim()}\n${CLAUDE_MD_MARKER_END}`;
+  }
+  if (!existsSync(path)) {
+    writeFileSync(path, wrapped + '\n');
+    return { merged: false };
+  }
+  const existing = readFileSync(path, 'utf-8');
+  if (existing.includes(CLAUDE_MD_MARKER_START) && existing.includes(CLAUDE_MD_MARKER_END)) {
+    const startIdx = existing.indexOf(CLAUDE_MD_MARKER_START);
+    const endIdx = existing.indexOf(CLAUDE_MD_MARKER_END) + CLAUDE_MD_MARKER_END.length;
+    const next = existing.slice(0, startIdx) + wrapped + existing.slice(endIdx);
+    writeFileSync(path, next);
+    return { merged: true };
+  }
+  const next = existing.trimEnd() + '\n\n' + wrapped + '\n';
+  writeFileSync(path, next);
+  return { merged: true };
+}
+
 /**
  * Read the markdown plan written by a plan-role agent (or consumed by a
  * downstream agent). Returns { content, path } or null if no plan file

@@ -35,6 +35,8 @@ import {
   discardProposalById,
   promoteProposalToEdit,
   runPlanner,
+  runAdoption,
+  getAdoptionProgress,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -376,6 +378,34 @@ app.post('/api/projects/:name/proposals', async (req, res) => {
     if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
     res.status(500).json({ error: msg });
   }
+});
+
+// dmux adopt (Wave 2C). Validates path/name, registers the project, runs
+// discovery (~30-60s), writes/merges CLAUDE.md, stages a starter team as a
+// proposal. The optional correlationId lets clients poll stage progress
+// via GET /api/adopt/progress/:correlationId while the POST is in flight.
+app.post('/api/adopt', async (req, res) => {
+  try {
+    const { path, name, correlationId } = req.body ?? {};
+    const result = await runAdoption(path, name, correlationId);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    const status = e?.status;
+    const msg = e?.message ?? String(e);
+    if (status) return res.status(status).json({ error: msg });
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Poll the in-flight adoption job's progress. Returns 404 if the
+// correlationId is unknown (either never started, expired, or typoed).
+app.get('/api/adopt/progress/:correlationId', (req, res) => {
+  const progress = getAdoptionProgress(req.params.correlationId);
+  if (!progress) return res.status(404).json({ error: 'Unknown correlationId' });
+  res.json(progress);
 });
 
 // Stop a running run: kill its tmux session and mark cleaned. Worktrees

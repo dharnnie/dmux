@@ -19,6 +19,26 @@ const VALID_MODELS_BY_PROVIDER = {
   gemini: new Set(['pro', 'flash']),
 };
 
+// Normalize fully-qualified model ids to the short aliases dmux uses
+// internally. Lets configs (especially LLM-generated ones from the NL
+// planner) refer to models the way users most often see them written —
+// e.g. `claude-opus-4-7` → `opus`. Unknown strings pass through unchanged
+// and hit the alias validator as before.
+const MODEL_ALIAS_PATTERNS = [
+  { match: /^claude-opus(?:[-_].*)?$/i, alias: 'opus' },
+  { match: /^claude-sonnet(?:[-_].*)?$/i, alias: 'sonnet' },
+  { match: /^claude-haiku(?:[-_].*)?$/i, alias: 'haiku' },
+  { match: /^gemini.*-pro(?:[-_].*)?$/i, alias: 'pro' },
+  { match: /^gemini.*-flash(?:[-_].*)?$/i, alias: 'flash' },
+];
+
+function normalizeModelAlias(value) {
+  for (const { match, alias } of MODEL_ALIAS_PATTERNS) {
+    if (match.test(value)) return alias;
+  }
+  return value;
+}
+
 // Exported as plain arrays so the UI can render selects without duplicating
 // the list and so the bash side can introspect via JSON if needed later.
 export const MODELS_BY_PROVIDER = Object.fromEntries(
@@ -171,14 +191,15 @@ function optionalModel(obj, key, resolvedProvider, ctx = {}) {
     throw new ConfigError(`'${key}' must be a non-empty string`, { field: key, ...ctx });
   }
   const trimmed = v.trim();
+  const normalized = normalizeModelAlias(trimmed);
   const validSet = VALID_MODELS_BY_PROVIDER[resolvedProvider];
-  if (validSet && !validSet.has(trimmed)) {
+  if (validSet && !validSet.has(normalized)) {
     throw new ConfigError(
       `'${key}' must be one of (${resolvedProvider}): ${[...validSet].join(', ')} (got: ${JSON.stringify(trimmed)})`,
       { field: key, ...ctx },
     );
   }
-  return trimmed;
+  return normalized;
 }
 
 function normalizeStringList(value, field, ctx = {}) {

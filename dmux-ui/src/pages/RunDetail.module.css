@@ -112,6 +112,7 @@
 .statusGlyph[data-tone='green'] { color: var(--accent-green); }
 .statusGlyph[data-tone='red'] { color: var(--accent-red); }
 .statusGlyph[data-tone='orange'] { color: var(--accent-orange); }
+.statusGlyph[data-tone='cyan'] { color: var(--accent-cyan); }
 .statusGlyph[data-tone='muted'] { color: var(--text-secondary); }
 
 .status {
@@ -245,4 +246,26 @@
   border-radius: var(--radius-sm);
   overflow-x: auto;
   white-space: pre;
+}
+
+/* Proposal review variant */
+.prompt {
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-left: 3px solid var(--accent-cyan);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  font-style: italic;
+}
+
+.proposalActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.proposalSpacer {
+  flex: 1;
 }

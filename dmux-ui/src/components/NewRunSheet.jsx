@@ -2,31 +2,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sheet from './Sheet';
 import Button from './Button';
-import { Select } from './Field';
+import { Select, Textarea } from './Field';
 import FormFromSchema from './FormFromSchema';
 import { useToast } from './Toasts';
 import styles from './NewRunSheet.module.css';
 
 /**
- * NewRunSheet — Section 4.6 (Wave 2A skeleton + Wave 2B parameterized).
+ * NewRunSheet — Section 4.6.
  *
- * Steps:
- *   1. Path choice (Quick now; Smart shows "Coming soon" until Wave 2B PR 3)
- *   2. Pick skill (project select + skill cards)
- *   2b. Fill inputs (when the chosen skill has an `inputs:` schema)
- *   3. Review + Save & Run (with rendered-YAML preview when inputs were used)
- *
- * On Save & Run:
- *   - POST /api/projects/:name/skills/:skill with { inputs } — writes the
- *     rendered .dmux-agents.yml (server templates via dmux-core's
- *     applyInputs)
- *   - POST /api/projects/:name/agents/start with { trigger } — bash side
- *     records trigger=skill on the new Run
- *   - Navigate to /projects/:name so the user sees the new run in History
+ * Two paths:
+ *   - Quick: 'path' → 'skill' [→ 'inputs'] → 'review' → POST skill apply +
+ *     start. Ends at /projects/:name with a running run.
+ *   - Smart (Wave 2B PR 3): 'path' → 'smart-prompt' → POST /api/projects/
+ *     :name/proposals (planner). Ends at /projects/:name/runs/:proposalId
+ *     where the user reviews + approves the proposed team.
  *
  * Props:
  *   open, onClose — standard Sheet controls
- *   initialProject — project name to pre-select for Step 2
+ *   initialProject — project name to pre-select
  */
 export default function NewRunSheet({ open, onClose, initialProject = null }) {
   const navigate = useNavigate();
@@ -41,6 +34,7 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
   const [skills, setSkills] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [renderedPreview, setRenderedPreview] = useState(null);
+  const [smartPrompt, setSmartPrompt] = useState('');
 
   // Reset internal state every time the sheet opens.
   useEffect(() => {
@@ -53,6 +47,7 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
     setInputErrors({});
     setSubmitting(false);
     setRenderedPreview(null);
+    setSmartPrompt('');
   }, [open, initialProject]);
 
   useEffect(() => {
@@ -63,28 +58,60 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
 
   const hasInputs = Boolean(skill?.inputs && skill.inputs.length > 0);
 
-  // Step index for the progress dots — collapses "inputs" into step 2 visually
-  // but uses the title to make it clear it's a separate phase.
-  const titleStepNum = step === 'path' ? 1 : step === 'skill' ? 2 : step === 'inputs' ? 2 : 3;
+  // Step index for the progress dots. Smart path is 2 steps total (path →
+  // prompt → off to the proposal review page, which is its own route). Quick
+  // is 3 steps with 'inputs' folded into step 2 visually.
+  const isSmart = path === 'smart';
+  const totalSteps = isSmart ? 2 : 3;
+  const titleStepNum =
+    step === 'path' ? 1 :
+    step === 'smart-prompt' ? 2 :
+    step === 'skill' ? 2 :
+    step === 'inputs' ? 2 :
+    3;
   const titleLabel = {
     path: 'Choose path',
+    'smart-prompt': 'Describe the work',
     skill: 'Pick skill',
     inputs: 'Fill inputs',
     review: 'Review',
   }[step] ?? '';
-  const title = `Step ${titleStepNum} of 3 — ${titleLabel}`;
-  const isReview = step === 'review';
+  const title = `Step ${titleStepNum} of ${totalSteps} — ${titleLabel}`;
+  const isReview = step === 'review' || step === 'smart-prompt';
 
   const handleBack = () => {
     if (submitting) return;
     if (step === 'review') setStep(hasInputs ? 'inputs' : 'skill');
     else if (step === 'inputs') setStep('skill');
     else if (step === 'skill') setStep('path');
+    else if (step === 'smart-prompt') setStep('path');
   };
 
   const handleInputsContinue = () => {
     setInputErrors({});
     setStep('review');
+  };
+
+  const handleSmartSubmit = async () => {
+    if (!project || !smartPrompt.trim()) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/projects/${project}/proposals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: smartPrompt.trim() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error || `Planner failed (HTTP ${res.status})`);
+      }
+      toast(`Proposal ready — review the planned team.`, 'success');
+      onClose();
+      navigate(`/projects/${project}/runs/${body.proposalId}`);
+    } catch (e) {
+      toast(`Planner: ${e.message}`, 'error');
+      setSubmitting(false);
+    }
   };
 
   const handleSaveAndRun = async () => {
@@ -143,6 +170,23 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
         <Button variant="secondary" onClick={handleBack}>← Back</Button>
       </>
     );
+  } else if (step === 'smart-prompt') {
+    footer = (
+      <>
+        <Button variant="secondary" onClick={handleBack} disabled={submitting}>
+          ← Back
+        </Button>
+        <span className={styles.footerSpacer} />
+        <Button
+          variant="primary"
+          onClick={handleSmartSubmit}
+          loading={submitting}
+          disabled={!project || !smartPrompt.trim()}
+        >
+          {submitting ? 'Planning…' : 'Plan team →'}
+        </Button>
+      </>
+    );
   } else if (step === 'inputs') {
     footer = (
       <>
@@ -176,7 +220,7 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
       dismissOnBackdrop={!isReview}
     >
       <div className={styles.steps}>
-        {[1, 2, 3].map((n) => (
+        {Array.from({ length: totalSteps }, (_, i) => i + 1).map((n) => (
           <span
             key={n}
             className={`${styles.dot} ${n <= titleStepNum ? styles.dotActive : ''}`}
@@ -189,8 +233,19 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
         <PathStep
           onPick={(p) => {
             setPath(p);
-            setStep('skill');
+            setStep(p === 'smart' ? 'smart-prompt' : 'skill');
           }}
+        />
+      )}
+
+      {step === 'smart-prompt' && (
+        <SmartPromptStep
+          projects={projects}
+          project={project}
+          onProjectChange={setProject}
+          prompt={smartPrompt}
+          onPromptChange={setSmartPrompt}
+          submitting={submitting}
         />
       )}
 
@@ -260,7 +315,7 @@ function PathStep({ onPick }) {
         </div>
       </button>
 
-      <button type="button" className={`${styles.pathCard} ${styles.pathCardDisabled}`} disabled aria-disabled="true">
+      <button type="button" className={styles.pathCard} onClick={() => onPick('smart')}>
         <span className={styles.pathGlyph} aria-hidden="true">✨</span>
         <div className={styles.pathBody}>
           <div className={styles.pathTitle}>Smart</div>
@@ -268,9 +323,46 @@ function PathStep({ onPick }) {
             Describe the work in your own words and let a planner agent
             propose the team.
           </div>
-          <div className={styles.pathSoon}>Coming soon</div>
+          <div className={styles.pathArrow} aria-hidden="true">Describe →</div>
         </div>
       </button>
+    </div>
+  );
+}
+
+// ---------- Step 2 (Smart): Describe the work ----------
+
+function SmartPromptStep({ projects, project, onProjectChange, prompt, onPromptChange, submitting }) {
+  return (
+    <div className={styles.smartStep}>
+      <Select
+        label="Project"
+        value={project ?? ''}
+        onChange={(e) => onProjectChange(e.target.value || null)}
+        disabled={submitting}
+        helperText="The planner reads this project's file tree and CLAUDE.md for context."
+      >
+        <option value="">— pick a project —</option>
+        {projects.map((p) => (
+          <option key={p.name} value={p.name}>{p.name}</option>
+        ))}
+      </Select>
+
+      <Textarea
+        label="What should the team do?"
+        value={prompt}
+        onChange={(e) => onPromptChange(e.target.value)}
+        disabled={submitting}
+        rows={6}
+        placeholder="e.g. Add OAuth login with tests and a security review."
+        helperText="The planner proposes a team of agents based on this request. You'll review and approve before anything runs."
+      />
+
+      {submitting && (
+        <p className={styles.smartHint}>
+          Planner is working… this usually takes 5–15 seconds.
+        </p>
+      )}
     </div>
   );
 }

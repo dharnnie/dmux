@@ -33,6 +33,8 @@ import {
   stopRun,
   approveAndLaunchProposal,
   discardProposalById,
+  promoteProposalToEdit,
+  runPlanner,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -327,6 +329,51 @@ app.post('/api/projects/:name/proposals/:runId/discard', (req, res) => {
     const msg = e?.message ?? String(e);
     if (/not found/i.test(msg)) return res.status(404).json({ error: msg });
     if (/started run/i.test(msg)) return res.status(409).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Promote a proposal to the editor: copy its YAML into the project's live
+// .dmux-agents.yml and abandon the proposal. The user is bounced to the
+// existing config-editor surface and can tweak before starting a run.
+app.post('/api/projects/:name/proposals/:runId/promote-to-edit', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = promoteProposalToEdit(project.path, req.params.runId);
+    res.json(result);
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (/not found/i.test(msg)) return res.status(404).json({ error: msg });
+    if (/not a proposal/i.test(msg)) return res.status(409).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// NL planner Smart path (Wave 2B PR 3). Takes a free-form prompt, shells to
+// `claude` with project context, validates the returned YAML, and persists
+// the result as a proposal via dmux-core's createProposal. Returns the new
+// proposal id so the UI can navigate to the review page.
+app.post('/api/projects/:name/proposals', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const prompt = (req.body?.prompt ?? '').toString();
+    if (!prompt.trim()) {
+      return res.status(400).json({ error: 'Prompt is required.' });
+    }
+
+    const { proposalId } = await runPlanner(project.path, project.name, prompt);
+    res.json({ ok: true, proposalId });
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
     res.status(500).json({ error: msg });
   }
 });

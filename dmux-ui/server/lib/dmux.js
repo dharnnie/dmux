@@ -456,7 +456,7 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
     }
 
     setAdoptionStage(correlationId, 'discovering');
-    const { claudeMdContent, agentsYaml } = await runDiscovery(path, name);
+    const { claudeMdContent, agentsYaml, recommendedSkills } = await runDiscovery(path, name);
 
     setAdoptionStage(correlationId, 'writing-claude-md');
     const claudeResult = writeClaudeMd(path, claudeMdContent);
@@ -471,8 +471,12 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
       provider: a.provider || parsed.provider || 'claude',
       depends_on: a.depends_on || [],
     }));
+    const trigger = { type: 'adopt', adoptedPath: path };
+    if (recommendedSkills && recommendedSkills.length > 0) {
+      trigger.recommendedSkills = recommendedSkills;
+    }
     const { id: proposalId } = createProposalFromCore(path, {
-      trigger: { type: 'adopt', adoptedPath: path },
+      trigger,
       configYaml: agentsYaml,
       agentsSummary,
     });
@@ -481,12 +485,14 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
       projectName: name,
       proposalId,
       mergedExistingClaudeMd: claudeResult.merged,
+      recommendedSkillsCount: recommendedSkills?.length ?? 0,
     });
 
     return {
       projectName: name,
       proposalId,
       mergedExistingClaudeMd: claudeResult.merged,
+      recommendedSkills: recommendedSkills ?? [],
     };
   } catch (e) {
     setAdoptionStage(correlationId, 'error', { error: e?.message ?? String(e) });
@@ -515,7 +521,8 @@ function conflict(msg) {
  */
 async function runDiscovery(projectPath, projectName, opts = {}) {
   const { additionalContext = null, skipClaudeMd = false } = opts;
-  const ctx = buildDiscoveryContext(projectPath, projectName);
+  const skillsCatalogue = buildSkillsCatalogueForPrompt();
+  const ctx = { ...buildDiscoveryContext(projectPath, projectName), skillsCatalogue };
   let lastError = null;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -536,7 +543,8 @@ async function runDiscovery(projectPath, projectName, opts = {}) {
     }
     try {
       parseAgentsConfigFromCore(yamlText);
-      return { claudeMdContent: claudeMd, agentsYaml: yamlText };
+      const recommendedSkills = parseRecommendedSkillsBlock(response);
+      return { claudeMdContent: claudeMd, agentsYaml: yamlText, recommendedSkills };
     } catch (e) {
       lastError = `Your previous YAML was rejected by the schema validator: ${e.message}. Fix and re-emit.`;
       if (attempt === 2) {
@@ -544,6 +552,60 @@ async function runDiscovery(projectPath, projectName, opts = {}) {
       }
     }
   }
+}
+
+function buildSkillsCatalogueForPrompt() {
+  let skills;
+  try {
+    skills = getSkills();
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(skills) || skills.length === 0) return null;
+  return skills
+    .map((s) => `- ${s.name} (${s.installed ? 'already installed' : 'available'}): ${s.description ?? ''}`)
+    .join('\n');
+}
+
+/**
+ * Parse the optional ```recommended-skills fenced block from a discovery
+ * response. Format is a JSON array of { name, reason } objects. Returns
+ * a normalized array of { name, reason, installed }; bad/missing blocks
+ * yield an empty array (this is optional output, never fatal). Names that
+ * don't match any known skill are dropped silently — the agent doesn't get
+ * to introduce skills that don't exist.
+ */
+function parseRecommendedSkillsBlock(response) {
+  const block = extractFencedBlock(response, ['recommended-skills', 'json']);
+  if (!block) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(block);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  let catalogue;
+  try {
+    catalogue = getSkills();
+  } catch {
+    catalogue = [];
+  }
+  const byName = new Map(catalogue.map((s) => [s.name, s]));
+
+  const out = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.reason !== 'string') continue;
+    const name = entry.name.trim();
+    const reason = entry.reason.trim();
+    if (!name || !reason) continue;
+    const catEntry = byName.get(name);
+    if (!catEntry) continue;  // drop names that don't exist in the catalogue
+    out.push({ name, reason, installed: Boolean(catEntry.installed) });
+    if (out.length >= 4) break;  // hard cap at 4 — design §3
+  }
+  return out;
 }
 
 function buildDiscoveryContext(projectPath, projectName) {
@@ -583,14 +645,15 @@ function safeReadFileSized(path, maxBytes) {
 
 function buildDiscoveryPrompt(ctx, retryError, opts = {}) {
   const { additionalContext = null, skipClaudeMd = false } = opts;
+  const hasSkills = Boolean(ctx.skillsCatalogue);
   const sections = [
     skipClaudeMd
       ? `You are dmux's discovery agent. You previously analyzed this project and proposed a team. The user has been chatting with you and now wants a regenerated .dmux-agents.yml that reflects their feedback. Emit only the YAML block — no CLAUDE.md.`
-      : `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit two artifacts: an updated CLAUDE.md and a starter .dmux-agents.yml.`,
+      : `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit artifacts that get it set up: an updated CLAUDE.md, a starter .dmux-agents.yml, and (optionally) a list of skills from the catalogue that would help this project.`,
     ``,
     skipClaudeMd
-      ? `Output format: exactly one fenced \`\`\`yaml code block. No other code blocks. One short paragraph of summary OUTSIDE the block.`
-      : `Output format: exactly two fenced code blocks, in this order:\n1. A \`\`\`claude-md fenced block\n2. A \`\`\`yaml fenced block\nPlus one short paragraph OUTSIDE both blocks summarizing what you found and what kind of starter team you proposed.`,
+      ? `Output format: one fenced \`\`\`yaml code block. Optionally also a \`\`\`recommended-skills JSON block (see rules below). One short paragraph of summary OUTSIDE the blocks.`
+      : `Output format: two required fenced blocks, in this order:\n1. A \`\`\`claude-md fenced block\n2. A \`\`\`yaml fenced block\nOptionally, a third \`\`\`recommended-skills JSON block (see rules below).\nPlus one short paragraph OUTSIDE the blocks summarizing what you found.`,
     ``,
     `### CLAUDE.md rules`,
     `- Wrap your CLAUDE.md output in these HTML-comment markers (literal, on their own lines):`,
@@ -633,6 +696,21 @@ function buildDiscoveryPrompt(ctx, retryError, opts = {}) {
     ``,
     `Existing .dmux-agents.yml:`,
     ctx.existingAgentsYaml ? '```yaml\n' + ctx.existingAgentsYaml + '\n```' : '(none)',
+    ``,
+    `Skill catalogue (for the optional recommended-skills block):`,
+    hasSkills ? ctx.skillsCatalogue : '(no skills installed or available)',
+    ``,
+    `### Recommended-skills rules (optional output)`,
+    `If one or more skills from the catalogue above are clearly relevant to this repo, emit a third fenced block:`,
+    '```recommended-skills',
+    `[`,
+    `  { "name": "<exact-skill-name-from-catalogue>", "reason": "<one sentence grounded in repo evidence>" }`,
+    `]`,
+    '```',
+    `- Only recommend skills from the catalogue above. Exact name match required.`,
+    `- Each reason must cite something you observed in the repo. No generic recommendations.`,
+    `- It's fine to recommend nothing — omit the block entirely.`,
+    `- Don't recommend more than 4 skills.`,
   ];
   if (additionalContext) {
     sections.push('', additionalContext);

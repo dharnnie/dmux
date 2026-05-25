@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import RunCard from '../components/RunCard';
 import Button from '../components/Button';
 import NewRunSheet from '../components/NewRunSheet';
+import AdoptSheet from '../components/AdoptSheet';
 import styles from './Dashboard.module.css';
 
 /**
@@ -12,6 +13,7 @@ import styles from './Dashboard.module.css';
 export default function Dashboard() {
   const [runs, setRuns] = useState(null); // null = loading, [] = no runs
   const [spawnOpen, setSpawnOpen] = useState(false);
+  const [adoptOpen, setAdoptOpen] = useState(false);
 
   const fetchRuns = () => {
     fetch('/api/runs')
@@ -28,6 +30,7 @@ export default function Dashboard() {
   }, []);
 
   const handleNewRun = () => setSpawnOpen(true);
+  const handleAdopt = () => setAdoptOpen(true);
 
   if (runs === null) {
     return (
@@ -52,9 +55,14 @@ export default function Dashboard() {
     <div className={styles.page}>
       <header className={styles.header}>
         <h1 className={styles.title}>Activity</h1>
-        <Button variant="primary" onClick={handleNewRun}>
-          + New Run
-        </Button>
+        <div className={styles.headerActions}>
+          <Button variant="secondary" onClick={handleAdopt}>
+            Adopt a repo
+          </Button>
+          <Button variant="primary" onClick={handleNewRun}>
+            + New Run
+          </Button>
+        </div>
       </header>
 
       {empty ? (
@@ -65,7 +73,8 @@ export default function Dashboard() {
           </p>
           <div className={styles.emptyActions}>
             <Button variant="primary" onClick={handleNewRun}>+ New Run</Button>
-            <Button variant="secondary" to="/projects">Browse projects</Button>
+            <Button variant="secondary" onClick={handleAdopt}>Adopt a repo</Button>
+            <Button variant="ghost" to="/projects">Browse projects</Button>
           </div>
         </section>
       ) : (
@@ -103,6 +112,7 @@ export default function Dashboard() {
       )}
 
       <NewRunSheet open={spawnOpen} onClose={() => setSpawnOpen(false)} />
+      <AdoptSheet open={adoptOpen} onClose={() => setAdoptOpen(false)} />
     </div>
   );
 }

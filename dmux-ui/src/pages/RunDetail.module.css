@@ -249,6 +249,48 @@
 }
 
 /* Proposal review variant */
+.adoptBanner {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--accent-cyan) 8%, var(--bg-input));
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 30%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.adoptGlyph {
+  font-size: 20px;
+  color: var(--accent-cyan);
+  line-height: 1.2;
+}
+
+.adoptBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adoptHeadline {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.adoptHeadline code,
+.adoptHint code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-primary);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.adoptHint {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 .prompt {
   margin: 0;
   padding: var(--space-2) var(--space-4);

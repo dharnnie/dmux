@@ -3,8 +3,10 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import Card, { CardTitle } from '../components/Card';
 import Disclosure from '../components/Disclosure';
 import Button from '../components/Button';
+import Tabs from '../components/Tabs';
 import { ConfirmDialog } from '../components/Sheet';
 import { useToast } from '../components/Toasts';
+import ProposalChat from '../components/ProposalChat';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -263,6 +265,49 @@ function formatTrigger(t) {
   return 'Manual';
 }
 
+function ReviewTabContent({ run, prompt }) {
+  return (
+    <>
+      {prompt && (
+        <Card header={<CardTitle>Your request</CardTitle>}>
+          <blockquote className={styles.prompt}>{prompt}</blockquote>
+        </Card>
+      )}
+
+      <Card header={<CardTitle>Proposed agents</CardTitle>}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Role</th>
+              <th>Model</th>
+              <th>Branch</th>
+              <th>Depends on</th>
+            </tr>
+          </thead>
+          <tbody>
+            {run.agents.map((a) => (
+              <tr key={a.name} className={styles.row}>
+                <td className={styles.cellName}>{a.name}</td>
+                <td className={styles.cellMono}>{a.role}</td>
+                <td className={styles.cellMono}>{a.model ?? '—'}</td>
+                <td className={styles.cellMono}>{a.branch || '—'}</td>
+                <td className={styles.cellMono}>
+                  {a.depends_on && a.depends_on.length > 0 ? a.depends_on.join(', ') : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Disclosure title="Proposed .dmux-agents.yml" defaultOpen>
+        <pre className={styles.yaml}>{run.config.yaml}</pre>
+      </Disclosure>
+    </>
+  );
+}
+
 function formatTimestamp(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -301,6 +346,7 @@ function formatAgentDuration(run, a) {
 function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
   const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | null
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [tab, setTab] = useState('review');
   const triggerType = run.trigger?.type ?? null;
   const isAdopt = triggerType === 'adopt';
   const adoptedPath = isAdopt ? run.trigger?.adoptedPath ?? null : null;
@@ -355,42 +401,29 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
         </div>
       )}
 
-      {prompt && (
-        <Card header={<CardTitle>Your request</CardTitle>}>
-          <blockquote className={styles.prompt}>{prompt}</blockquote>
-        </Card>
+      {isAdopt ? (
+        <Tabs
+          tabs={[
+            { value: 'review', label: 'Review' },
+            { value: 'chat', label: 'Chat with discovery' },
+          ]}
+          value={tab}
+          onChange={setTab}
+        >
+          {tab === 'review' && (
+            <ReviewTabContent run={run} prompt={prompt} />
+          )}
+          {tab === 'chat' && (
+            <ProposalChat
+              projectName={name}
+              proposalId={runId}
+              onProposalChange={onChange}
+            />
+          )}
+        </Tabs>
+      ) : (
+        <ReviewTabContent run={run} prompt={prompt} />
       )}
-
-      <Card header={<CardTitle>Proposed agents</CardTitle>}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Agent</th>
-              <th>Role</th>
-              <th>Model</th>
-              <th>Branch</th>
-              <th>Depends on</th>
-            </tr>
-          </thead>
-          <tbody>
-            {run.agents.map((a) => (
-              <tr key={a.name} className={styles.row}>
-                <td className={styles.cellName}>{a.name}</td>
-                <td className={styles.cellMono}>{a.role}</td>
-                <td className={styles.cellMono}>{a.model ?? '—'}</td>
-                <td className={styles.cellMono}>{a.branch || '—'}</td>
-                <td className={styles.cellMono}>
-                  {a.depends_on && a.depends_on.length > 0 ? a.depends_on.join(', ') : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-
-      <Disclosure title="Proposed .dmux-agents.yml" defaultOpen>
-        <pre className={styles.yaml}>{run.config.yaml}</pre>
-      </Disclosure>
 
       <div className={styles.proposalActions}>
         <Button

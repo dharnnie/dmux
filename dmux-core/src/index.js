@@ -17,6 +17,7 @@ export {
   createProposal,
   approveProposal,
   discardProposal,
+  updateProposal,
 } from './runs.js';
 
 export {

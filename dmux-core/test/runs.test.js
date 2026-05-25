@@ -13,6 +13,7 @@ import {
   createProposal,
   approveProposal,
   discardProposal,
+  updateProposal,
 } from '../src/runs.js';
 
 let projectDir;
@@ -347,6 +348,57 @@ describe('proposal lifecycle', () => {
       agentsSummary: sampleAgents(),
     });
     expect(() => discardProposal(projectDir, id)).toThrow(/Cannot discard a started run/);
+  });
+
+  it('updateProposal replaces configYaml and agentsSummary in place', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+      now: new Date('2026-05-20T10:00:00Z'),
+    });
+    const newYaml = sampleYaml + '\n# updated';
+    const newAgents = [
+      { name: 'solo', role: 'build', branch: 'feat/solo', depends_on: [] },
+    ];
+    const result = updateProposal(projectDir, id, {
+      configYaml: newYaml,
+      agentsSummary: newAgents,
+    });
+    expect(result.ok).toBe(true);
+    const after = readRun(projectDir, id);
+    expect(after.config.yaml).toBe(newYaml);
+    expect(after.config.agents).toEqual(newAgents);
+    expect(after.proposed_at).toBe('2026-05-20T10:00:00.000Z');  // unchanged
+    expect(after.status).toBe('proposed');
+  });
+
+  it('updateProposal refuses approved or abandoned proposals', () => {
+    const { id: approvedId } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    approveProposal(projectDir, approvedId);
+    expect(() => updateProposal(projectDir, approvedId, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    })).toThrow(/Cannot update a started run/);
+
+    const { id: abandonedId } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    discardProposal(projectDir, abandonedId);
+    expect(() => updateProposal(projectDir, abandonedId, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    })).toThrow(/Cannot update abandoned proposal/);
+  });
+
+  it('updateProposal throws on unknown run id', () => {
+    expect(() => updateProposal(projectDir, '2026-05-20T000000-deadbe', {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    })).toThrow(/Run not found/);
   });
 
   it('listRuns includes proposals and surfaces correct status', () => {

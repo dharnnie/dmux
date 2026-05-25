@@ -183,6 +183,40 @@ export function approveProposal(projectPath, runId, now = new Date()) {
 }
 
 /**
+ * Update a proposal's frozen config in place. Used by Wave 2D's
+ * discovery-chat regenerate path and the customize-before-approving flow.
+ * Preserves the run id, project, proposed_at, and trigger; only the
+ * config.yaml + config.agents fields change. Throws if the run is not
+ * currently in `proposed` state (already approved or abandoned).
+ */
+export function updateProposal(projectPath, runId, { configYaml, agentsSummary }) {
+  if (typeof configYaml !== 'string') {
+    throw new Error('updateProposal: configYaml is required (string)');
+  }
+  if (!Array.isArray(agentsSummary)) {
+    throw new Error('updateProposal: agentsSummary is required (array)');
+  }
+  const run = readRunJson(projectPath, runId);
+  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (run.abandoned_at) {
+    throw new Error(`Cannot update abandoned proposal: ${runId}`);
+  }
+  if (run.started_at) {
+    throw new Error(`Cannot update a started run: ${runId}`);
+  }
+  if (!run.proposed_at) {
+    throw new Error(`Run ${runId} is not a proposal (no proposed_at timestamp)`);
+  }
+  run.config.yaml = configYaml;
+  run.config.agents = agentsSummary;
+  writeFileSync(
+    join(projectPath, RUNS_DIR, runId, 'run.json'),
+    JSON.stringify(run, null, 2),
+  );
+  return { id: runId, ok: true };
+}
+
+/**
  * Discard a proposal: set `abandoned_at` on the record. Worktrees were
  * never created so nothing else to clean.
  *

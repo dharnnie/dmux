@@ -13,9 +13,14 @@ import styles from './RunCard.module.css';
  * Both variants link to /projects/{project}/runs/{id}.
  */
 export default function RunCard({ run, variant = 'full', showProject = true }) {
+  const isProposed = run.status === 'proposed';
+  // Proposals are addressable as runs too (design §3.5: Run Detail renders the
+  // proposal variant when status=proposed). The dedicated /proposals/:id route
+  // arrives with PR 3.
   const to = `/projects/${run.project}/runs/${run.id}`;
   const tone = STATUS_TONE[run.status] ?? 'muted';
   const triggerText = formatTrigger(run.trigger);
+  const eventAt = run.started_at ?? run.proposed_at ?? null;
   const elapsed = formatElapsed(run);
 
   if (variant === 'row') {
@@ -26,7 +31,7 @@ export default function RunCard({ run, variant = 'full', showProject = true }) {
         </span>
         <span className={styles.rowStatus}>{run.status}</span>
         {showProject && <span className={styles.rowProject}>{run.project}</span>}
-        <span className={styles.rowTimestamp}>{formatTimestamp(run.started_at)}</span>
+        <span className={styles.rowTimestamp}>{formatTimestamp(eventAt)}</span>
         <span className={styles.rowTrigger}>{triggerText}</span>
         <span className={styles.rowAgents}>
           {run.agent_count} agent{run.agent_count === 1 ? '' : 's'}
@@ -50,7 +55,9 @@ export default function RunCard({ run, variant = 'full', showProject = true }) {
           </>
         )}
         <span className={styles.divider}>·</span>
-        <span className={styles.timestamp}>Run {formatTimestamp(run.started_at)}</span>
+        <span className={styles.timestamp}>
+          {isProposed ? 'Proposed' : 'Run'} {formatTimestamp(eventAt)}
+        </span>
         <span className={styles.spacer} />
         <span className={styles.elapsed}>{elapsed}</span>
       </header>
@@ -73,7 +80,7 @@ export default function RunCard({ run, variant = 'full', showProject = true }) {
       </div>
 
       <footer className={styles.footer}>
-        <span className={styles.viewLink}>view run →</span>
+        <span className={styles.viewLink}>{isProposed ? 'Review →' : 'view run →'}</span>
       </footer>
     </Link>
   );
@@ -98,6 +105,7 @@ const STATUS_GLYPH = {
   cleaned: '○',
   abandoned: '⊘',
   pending: '◌',
+  proposed: '◌',
 };
 
 const AGENT_TONE = {
@@ -134,11 +142,14 @@ function formatTimestamp(iso) {
 }
 
 function formatElapsed(run) {
-  if (!run.started_at) return '';
-  const start = new Date(run.started_at).getTime();
+  const begin = run.started_at ?? run.proposed_at;
+  if (!begin) return '';
+  const start = new Date(begin).getTime();
   const end = run.completed_at ? new Date(run.completed_at).getTime() : Date.now();
   const ms = end - start;
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
-  return `${(ms / 3_600_000).toFixed(1)}h`;
+  let value;
+  if (ms < 60_000) value = `${Math.round(ms / 1000)}s`;
+  else if (ms < 3_600_000) value = `${Math.round(ms / 60_000)}m`;
+  else value = `${(ms / 3_600_000).toFixed(1)}h`;
+  return run.status === 'proposed' ? `${value} ago` : value;
 }

@@ -82,9 +82,9 @@ export default function Dashboard() {
 
           {proposed.length > 0 && (
             <Section title={`Pending proposals (${proposed.length})`}>
-              <div className={styles.runningGrid}>
+              <div className={styles.rowsList}>
                 {proposed.map((r) => (
-                  <RunCard key={r.id} run={r} variant="full" />
+                  <RunCard key={r.id} run={r} variant="row" />
                 ))}
               </div>
             </Section>

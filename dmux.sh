@@ -642,10 +642,33 @@ remove_worktrees() {
 # SIGNAL / MARKER FILE MANAGEMENT
 # ------------------------------------------------------------------------------
 
-# Create a new Run record via dmux-core. Echoes "{id}|{signalsDir}" on success.
+# Create or adopt a Run record. Echoes "{id}|{signalsDir}" on success.
 # Writes the active run id to .dmux/active_run so downstream commands can find it.
+#
+# Behavior:
+#   - If DMUX_ADOPT_RUN_ID is set, ADOPT that existing run instead of creating
+#     a new one (used by the proposal-approve path: the run was created earlier
+#     via dmux-runs propose, then approveProposal set started_at + wrote the
+#     live .dmux-agents.yml; bash now needs to launch agents against it).
+#   - Otherwise, create a fresh Run via dmux-core.
 start_run() {
   local project_root="$1"
+
+  if [[ -n "${DMUX_ADOPT_RUN_ID:-}" ]]; then
+    local adopt_id="$DMUX_ADOPT_RUN_ID"
+    local adopt_dir="$project_root/.dmux/runs/$adopt_id"
+    if [[ ! -d "$adopt_dir" ]]; then
+      echo "Error: DMUX_ADOPT_RUN_ID=$adopt_id but $adopt_dir does not exist." >&2
+      return 1
+    fi
+    local signals_dir="$adopt_dir/signals"
+    mkdir -p "$signals_dir"
+    mkdir -p "$project_root/.dmux"
+    echo "$adopt_id" > "$project_root/.dmux/active_run"
+    echo "${adopt_id}|${signals_dir}"
+    return 0
+  fi
+
   resolve_dmux_core || return 1
   require_command "node" "creating run records (dmux-core)" || return 1
 

@@ -9,6 +9,8 @@ import {
   listAllRuns as listAllRunsFromCore,
   readRun as readRunFromCore,
   markRunCleaned as markRunCleanedFromCore,
+  approveProposal as approveProposalFromCore,
+  discardProposal as discardProposalFromCore,
 } from '../../../dmux-core/src/runs.js';
 import { computeViolations as computeViolationsFromCore } from '../../../dmux-core/src/scope.js';
 import { parseAgentsConfig as parseAgentsConfigFromCore } from '../../../dmux-core/src/config.js';
@@ -102,6 +104,26 @@ export function listAllRuns() {
 
 export function readRunDetail(projectPath, runId) {
   return readRunFromCore(projectPath, runId);
+}
+
+/**
+ * Approve a proposal and launch agents against it.
+ * dmux-core's approveProposal writes the live .dmux-agents.yml + sets
+ * started_at; then we shell into `dmux agents start` with DMUX_ADOPT_RUN_ID
+ * so the bash side reuses the existing run dir instead of creating a new one.
+ */
+export async function approveAndLaunchProposal(projectPath, projectName, runId) {
+  const result = approveProposalFromCore(projectPath, runId);
+  // If already approved, the underlying tmux session likely already exists.
+  // The user can interact with the running session — no further launch needed.
+  if (result.alreadyApproved) return { ...result, launched: false };
+
+  await execDmux(`agents start ${projectName} -y`, { DMUX_ADOPT_RUN_ID: runId });
+  return { ...result, launched: true };
+}
+
+export function discardProposalById(projectPath, runId) {
+  return discardProposalFromCore(projectPath, runId);
 }
 
 /**

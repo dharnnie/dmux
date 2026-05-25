@@ -10,6 +10,9 @@ import {
   listAllRuns,
   markRunCleaned,
   markRunCompleted,
+  createProposal,
+  approveProposal,
+  discardProposal,
 } from '../src/runs.js';
 
 let projectDir;
@@ -254,5 +257,136 @@ describe('listAllRuns', () => {
         { name: 'phantom', path: '/no/such/dir' },
       ]),
     ).not.toThrow();
+  });
+});
+
+describe('proposal lifecycle', () => {
+  it('createProposal sets proposed_at and leaves started_at null', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+      trigger: { type: 'nl', prompt: 'add OAuth' },
+    });
+    const run = readRun(projectDir, id);
+    expect(run.status).toBe('proposed');
+    expect(run.proposed_at).toBeTruthy();
+    expect(run.started_at).toBeNull();
+    expect(run.trigger).toEqual({ type: 'nl', prompt: 'add OAuth' });
+    // All agents reported as pending — no signal files exist yet.
+    expect(run.agents.every((a) => a.status === 'pending')).toBe(true);
+  });
+
+  it('approveProposal writes live YAML and sets started_at', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    const result = approveProposal(projectDir, id);
+    expect(result.ok).toBe(true);
+    expect(result.alreadyApproved).toBeUndefined();
+
+    // .dmux-agents.yml now exists with the frozen content
+    const livePath = join(projectDir, '.dmux-agents.yml');
+    expect(existsSync(livePath)).toBe(true);
+    expect(readFileSync(livePath, 'utf-8')).toBe(sampleYaml);
+
+    const run = readRun(projectDir, id);
+    expect(run.started_at).toBeTruthy();
+    // Status flips out of 'proposed' — depends on agent signals now (no signals
+    // yet → first agent running, downstream waiting).
+    expect(run.status).toBe('running');
+    expect(run.agents[0].status).toBe('running');
+    expect(run.agents[1].status).toBe('waiting');
+  });
+
+  it('approveProposal is idempotent (returns alreadyApproved on re-call)', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    approveProposal(projectDir, id);
+    const second = approveProposal(projectDir, id);
+    expect(second.alreadyApproved).toBe(true);
+  });
+
+  it('approveProposal rejects already-abandoned proposals', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    discardProposal(projectDir, id);
+    expect(() => approveProposal(projectDir, id)).toThrow(/Cannot approve abandoned/);
+  });
+
+  it('discardProposal sets abandoned_at and reports status=abandoned', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    discardProposal(projectDir, id);
+    const run = readRun(projectDir, id);
+    expect(run.status).toBe('abandoned');
+    expect(run.abandoned_at).toBeTruthy();
+    // All agents reported as abandoned too — they never ran.
+    expect(run.agents.every((a) => a.status === 'abandoned')).toBe(true);
+  });
+
+  it('discardProposal is idempotent (returns alreadyDiscarded on re-call)', () => {
+    const { id } = createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    discardProposal(projectDir, id);
+    const second = discardProposal(projectDir, id);
+    expect(second.alreadyDiscarded).toBe(true);
+  });
+
+  it('discardProposal refuses a started run', () => {
+    const { id } = createRun(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+    });
+    expect(() => discardProposal(projectDir, id)).toThrow(/Cannot discard a started run/);
+  });
+
+  it('listRuns includes proposals and surfaces correct status', () => {
+    createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+      now: new Date('2026-05-20T10:00:00Z'),
+    });
+    createRun(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+      now: new Date('2026-05-21T10:00:00Z'),
+    });
+
+    const runs = listRuns(projectDir);
+    expect(runs).toHaveLength(2);
+    // Sorted by started_at (or proposed_at) — newer regular run first.
+    expect(runs[0].status).toBe('running');
+    expect(runs[1].status).toBe('proposed');
+    expect(runs[1].proposed_at).toBeTruthy();
+    expect(runs[1].started_at).toBeNull();
+  });
+
+  it('listAllRuns sorts proposals correctly via proposed_at fallback', () => {
+    createProposal(projectDir, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+      now: new Date('2026-05-21T10:00:00Z'),
+    });
+    createRun(projectDir2, {
+      configYaml: sampleYaml,
+      agentsSummary: sampleAgents(),
+      now: new Date('2026-05-20T10:00:00Z'),
+    });
+    const merged = listAllRuns([
+      { name: 'a', path: projectDir },
+      { name: 'b', path: projectDir2 },
+    ]);
+    // Proposal in projectDir is newer (by proposed_at) → first.
+    expect(merged[0].status).toBe('proposed');
+    expect(merged[1].status).toBe('running');
   });
 });

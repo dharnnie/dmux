@@ -41,7 +41,9 @@ export default function useAgentStatus(projectName) {
     connect();
     return () => {
       if (wsRef.current) {
-        wsRef.current.send(JSON.stringify({ type: 'unsubscribe' }));
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'unsubscribe' }));
+        }
         wsRef.current.close();
       }
       if (reconnectRef.current) clearTimeout(reconnectRef.current);

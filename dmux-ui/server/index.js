@@ -37,6 +37,9 @@ import {
   runPlanner,
   runAdoption,
   getAdoptionProgress,
+  readProposalChat,
+  runProposalChat,
+  regenerateProposalFromChat,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -406,6 +409,67 @@ app.get('/api/adopt/progress/:correlationId', (req, res) => {
   const progress = getAdoptionProgress(req.params.correlationId);
   if (!progress) return res.status(404).json({ error: 'Unknown correlationId' });
   res.json(progress);
+});
+
+// Wave 2D Slice 1: discovery chat scoped to an adoption proposal.
+
+// Read the chat history for a proposal. Returns { greeting, messages, ... }.
+app.get('/api/projects/:name/runs/:proposalId/chat', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(readProposalChat(project.path, req.params.proposalId));
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Post a user message; runs a chat turn against discovery; returns the
+// assistant reply. ~30-90s depending on conversation length.
+app.post('/api/projects/:name/runs/:proposalId/chat', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const message = (req.body?.message ?? '').toString();
+    const result = await runProposalChat(project.path, project.name, req.params.proposalId, message);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status;
+    const msg = e?.message ?? String(e);
+    if (status) return res.status(status).json({ error: msg });
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/did not return/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Regenerate the proposal in place using the existing chat as additional
+// context. The proposal id and proposed_at are preserved; only configYaml +
+// agentsSummary change. CLAUDE.md is NOT rewritten (it was a one-time write
+// at adopt time).
+app.post('/api/projects/:name/runs/:proposalId/regenerate', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = await regenerateProposalFromChat(project.path, project.name, req.params.proposalId);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status;
+    const msg = e?.message ?? String(e);
+    if (status) return res.status(status).json({ error: msg });
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(500).json({ error: msg });
+  }
 });
 
 // Stop a running run: kill its tmux session and mark cleaned. Worktrees

@@ -1,5 +1,5 @@
 import { execSync, exec, spawn } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join, relative } from 'path';
 import { WebSocketServer } from 'ws';
@@ -12,6 +12,7 @@ import {
   approveProposal as approveProposalFromCore,
   discardProposal as discardProposalFromCore,
   createProposal as createProposalFromCore,
+  updateProposal as updateProposalFromCore,
 } from '../../../dmux-core/src/runs.js';
 import { computeViolations as computeViolationsFromCore } from '../../../dmux-core/src/scope.js';
 import { parseAgentsConfig as parseAgentsConfigFromCore } from '../../../dmux-core/src/config.js';
@@ -512,17 +513,18 @@ function conflict(msg) {
  * CLAUDE.md / .dmux-agents.yml. Extracts two fenced blocks (claude-md,
  * yaml). Retries once on missing-block or schema-validation failure.
  */
-async function runDiscovery(projectPath, projectName) {
+async function runDiscovery(projectPath, projectName, opts = {}) {
+  const { additionalContext = null, skipClaudeMd = false } = opts;
   const ctx = buildDiscoveryContext(projectPath, projectName);
   let lastError = null;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const prompt = buildDiscoveryPrompt(ctx, lastError);
+    const prompt = buildDiscoveryPrompt(ctx, lastError, { additionalContext, skipClaudeMd });
     const response = await execClaudeWithTimeout(prompt, DISCOVERY_MODEL, DISCOVERY_TIMEOUT_MS);
     const claudeMd = extractFencedBlock(response, 'claude-md');
     const yamlText = extractFencedBlock(response, ['yaml', 'yml']);
 
-    if (!claudeMd) {
+    if (!skipClaudeMd && !claudeMd) {
       lastError = 'Your previous response did not contain a ```claude-md fenced block. Emit one.';
       if (attempt === 2) throw new Error('Discovery produced no claude-md block after retry.');
       continue;
@@ -579,14 +581,16 @@ function safeReadFileSized(path, maxBytes) {
   }
 }
 
-function buildDiscoveryPrompt(ctx, retryError) {
+function buildDiscoveryPrompt(ctx, retryError, opts = {}) {
+  const { additionalContext = null, skipClaudeMd = false } = opts;
   const sections = [
-    `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit two artifacts: an updated CLAUDE.md and a starter .dmux-agents.yml.`,
+    skipClaudeMd
+      ? `You are dmux's discovery agent. You previously analyzed this project and proposed a team. The user has been chatting with you and now wants a regenerated .dmux-agents.yml that reflects their feedback. Emit only the YAML block — no CLAUDE.md.`
+      : `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit two artifacts: an updated CLAUDE.md and a starter .dmux-agents.yml.`,
     ``,
-    `Output format: exactly two fenced code blocks, in this order:`,
-    `1. A \`\`\`claude-md fenced block`,
-    `2. A \`\`\`yaml fenced block`,
-    `Plus one short paragraph OUTSIDE both blocks summarizing what you found and what kind of starter team you proposed.`,
+    skipClaudeMd
+      ? `Output format: exactly one fenced \`\`\`yaml code block. No other code blocks. One short paragraph of summary OUTSIDE the block.`
+      : `Output format: exactly two fenced code blocks, in this order:\n1. A \`\`\`claude-md fenced block\n2. A \`\`\`yaml fenced block\nPlus one short paragraph OUTSIDE both blocks summarizing what you found and what kind of starter team you proposed.`,
     ``,
     `### CLAUDE.md rules`,
     `- Wrap your CLAUDE.md output in these HTML-comment markers (literal, on their own lines):`,
@@ -630,6 +634,9 @@ function buildDiscoveryPrompt(ctx, retryError) {
     `Existing .dmux-agents.yml:`,
     ctx.existingAgentsYaml ? '```yaml\n' + ctx.existingAgentsYaml + '\n```' : '(none)',
   ];
+  if (additionalContext) {
+    sections.push('', additionalContext);
+  }
   if (retryError) {
     sections.push('', `IMPORTANT — this is a retry. ${retryError}`);
   }
@@ -726,6 +733,214 @@ export function writeClaudeMd(projectPath, content) {
   const next = existing.trimEnd() + '\n\n' + wrapped + '\n';
   writeFileSync(path, next);
   return { merged: true };
+}
+
+// ---------------------------------------------------------------------------
+// Discovery chat (Wave 2D Slice 1) — proposal-scoped chat surface where the
+// user converses with the discovery agent. Each chat is a JSON array at
+// `.dmux/chats/<proposalId>.json` bound to the lifetime of the proposal.
+// ---------------------------------------------------------------------------
+
+const CHAT_MODEL = 'sonnet';
+const CHAT_TIMEOUT_MS = 90_000;
+const CHAT_SOFT_CAP = 15;  // warn at this many total messages
+const CHAT_HARD_CAP = 25;  // refuse new messages past this
+
+function chatFilePath(projectPath, proposalId) {
+  return join(projectPath, '.dmux', 'chats', `${proposalId}.json`);
+}
+
+function buildChatGreeting(run) {
+  const n = run.config.agents.length;
+  const names = run.config.agents.map((a) => a.name).join(', ');
+  return `I read the repo and proposed a ${n}-agent team: ${names}. Ask me anything about what I found, or request changes to the team — I can re-propose with different agents.`;
+}
+
+/**
+ * Read the chat history for a proposal. Returns { greeting, messages,
+ * count, nearLimit, atHardCap }. Greeting is synthesized server-side from
+ * the proposal record; it isn't stored.
+ */
+export function readProposalChat(projectPath, proposalId) {
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  const greeting = buildChatGreeting(run);
+  const path = chatFilePath(projectPath, proposalId);
+  let messages = [];
+  if (existsSync(path)) {
+    try {
+      messages = JSON.parse(readFileSync(path, 'utf-8'));
+      if (!Array.isArray(messages)) messages = [];
+    } catch {
+      messages = [];
+    }
+  }
+  return {
+    greeting,
+    messages,
+    count: messages.length,
+    nearLimit: messages.length >= CHAT_SOFT_CAP,
+    atHardCap: messages.length >= CHAT_HARD_CAP,
+  };
+}
+
+function appendChatMessage(projectPath, proposalId, message) {
+  const dir = join(projectPath, '.dmux', 'chats');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const path = chatFilePath(projectPath, proposalId);
+  let messages = [];
+  if (existsSync(path)) {
+    try {
+      messages = JSON.parse(readFileSync(path, 'utf-8'));
+      if (!Array.isArray(messages)) messages = [];
+    } catch {
+      messages = [];
+    }
+  }
+  messages.push(message);
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, JSON.stringify(messages, null, 2));
+  renameSync(tmp, path);
+  return messages;
+}
+
+/**
+ * Run a single chat turn: append the user's message, assemble the full
+ * conversation as a prompt to claude --print, append the assistant's
+ * response, persist. Returns { message, count, nearLimit }.
+ *
+ * The discovery context (file tree, manifests, CLAUDE.md, current proposal)
+ * is re-fetched each turn. That's fine in v1 — the cost of re-reading local
+ * files is negligible compared to the LLM call.
+ */
+export async function runProposalChat(projectPath, projectName, proposalId, userMessage) {
+  if (typeof userMessage !== 'string' || userMessage.trim().length === 0) {
+    throw badRequest('message is required');
+  }
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  if (run.status !== 'proposed') {
+    throw conflict(`Proposal ${proposalId} is no longer in 'proposed' state (status=${run.status})`);
+  }
+
+  const existing = readProposalChat(projectPath, proposalId);
+  if (existing.atHardCap) {
+    const e = new Error(`Chat hard cap (${CHAT_HARD_CAP} messages) reached for this proposal.`);
+    e.status = 429;
+    throw e;
+  }
+
+  const trimmedUser = userMessage.trim();
+  appendChatMessage(projectPath, proposalId, {
+    role: 'user',
+    content: trimmedUser,
+    ts: new Date().toISOString(),
+  });
+
+  const ctx = buildDiscoveryContext(projectPath, projectName);
+  const prompt = buildChatPrompt(ctx, run, existing.greeting, existing.messages, trimmedUser);
+  const response = await execClaudeWithTimeout(prompt, CHAT_MODEL, CHAT_TIMEOUT_MS);
+
+  const assistantContent = (response ?? '').trim();
+  if (!assistantContent) {
+    throw new Error('The agent did not return a response. Try rephrasing.');
+  }
+
+  const assistantMessage = {
+    role: 'assistant',
+    content: assistantContent,
+    ts: new Date().toISOString(),
+  };
+  const all = appendChatMessage(projectPath, proposalId, assistantMessage);
+
+  return {
+    message: assistantMessage,
+    count: all.length,
+    nearLimit: all.length >= CHAT_SOFT_CAP,
+    atHardCap: all.length >= CHAT_HARD_CAP,
+  };
+}
+
+function buildChatPrompt(ctx, run, greeting, priorMessages, latestUserMessage) {
+  const sections = [
+    `You are dmux's discovery agent, in a chat with the user about a project you adopted into dmux. You already ran discovery; the user is now asking follow-ups or requesting changes to the team you proposed.`,
+    ``,
+    `Project context (loaded once; don't re-fetch):`,
+    `Project: ${ctx.projectName}`,
+    ``,
+    `File tree:`,
+    '```\n' + (ctx.fileTree || '(empty)') + '\n```',
+    ``,
+    `README:`,
+    ctx.readme ? '```\n' + ctx.readme + '\n```' : '(none)',
+    ``,
+    `CLAUDE.md you wrote:`,
+    ctx.existingClaudeMd ? '```\n' + ctx.existingClaudeMd + '\n```' : '(none)',
+    ``,
+    `Current proposed .dmux-agents.yml:`,
+    '```yaml\n' + run.config.yaml + '\n```',
+    ``,
+    `Conversation so far:`,
+    `Assistant (your opener): ${greeting}`,
+    ...priorMessages.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`),
+    `User: ${latestUserMessage}`,
+    ``,
+    `Rules:`,
+    `- Reply conversationally in plain prose. No fenced code blocks for new YAML — if the user wants the team changed, tell them you can regenerate the proposal and they can click "Regenerate proposal" to do it.`,
+    `- Keep replies tight: usually 2–4 sentences. Use bullet lists only when listing 3+ items.`,
+    `- Ground claims in the project context above. Don't make things up about files you haven't seen.`,
+    `- If the user is asking something off-topic from this project, redirect briefly.`,
+    ``,
+    `Respond to the user's latest message.`,
+  ];
+  return sections.join('\n');
+}
+
+/**
+ * Re-run discovery with the existing chat folded in as additional context.
+ * The resulting agents config replaces the proposal's frozen YAML in place
+ * (same run id, same proposed_at). The CLAUDE.md is NOT rewritten on
+ * regenerate — that was a one-time write at adoption time.
+ */
+export async function regenerateProposalFromChat(projectPath, projectName, proposalId) {
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  if (run.status !== 'proposed') {
+    throw conflict(`Proposal ${proposalId} is no longer in 'proposed' state`);
+  }
+
+  const chat = readProposalChat(projectPath, proposalId);
+  const additionalContext = chat.messages.length > 0
+    ? `The user has been chatting with you about this proposal. Their requested changes are in this transcript:\n\n` +
+      `Assistant (opener): ${chat.greeting}\n` +
+      chat.messages.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') +
+      `\n\nProduce an updated .dmux-agents.yml that reflects the user's intent from the conversation. The CLAUDE.md does not need to change.`
+    : '';
+
+  const { agentsYaml } = await runDiscovery(projectPath, projectName, { additionalContext, skipClaudeMd: true });
+
+  const parsed = parseAgentsConfigFromCore(agentsYaml);
+  const agentsSummary = parsed.agents.map((a) => ({
+    name: a.name,
+    role: a.role,
+    branch: a.branch || '',
+    model: a.model || null,
+    provider: a.provider || parsed.provider || 'claude',
+    depends_on: a.depends_on || [],
+  }));
+
+  updateProposalFromCore(projectPath, proposalId, {
+    configYaml: agentsYaml,
+    agentsSummary,
+  });
+
+  return { ok: true, proposalId };
+}
+
+function notFound(msg) {
+  const e = new Error(msg);
+  e.status = 404;
+  return e;
 }
 
 /**

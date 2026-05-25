@@ -1,8 +1,9 @@
 import { execSync, exec, spawn } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { join, relative } from 'path';
 import { WebSocketServer } from 'ws';
+import yaml from 'js-yaml';
 import { loadAgentsConfig as loadAgentsConfigParsedFromCore, ConfigError } from '../../../dmux-core/src/config.js';
 import {
   listRuns as listRunsFromCore,
@@ -12,6 +13,7 @@ import {
   approveProposal as approveProposalFromCore,
   discardProposal as discardProposalFromCore,
   createProposal as createProposalFromCore,
+  updateProposal as updateProposalFromCore,
 } from '../../../dmux-core/src/runs.js';
 import { computeViolations as computeViolationsFromCore } from '../../../dmux-core/src/scope.js';
 import { parseAgentsConfig as parseAgentsConfigFromCore } from '../../../dmux-core/src/config.js';
@@ -455,7 +457,7 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
     }
 
     setAdoptionStage(correlationId, 'discovering');
-    const { claudeMdContent, agentsYaml } = await runDiscovery(path, name);
+    const { claudeMdContent, agentsYaml, recommendedSkills } = await runDiscovery(path, name);
 
     setAdoptionStage(correlationId, 'writing-claude-md');
     const claudeResult = writeClaudeMd(path, claudeMdContent);
@@ -470,8 +472,12 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
       provider: a.provider || parsed.provider || 'claude',
       depends_on: a.depends_on || [],
     }));
+    const trigger = { type: 'adopt', adoptedPath: path };
+    if (recommendedSkills && recommendedSkills.length > 0) {
+      trigger.recommendedSkills = recommendedSkills;
+    }
     const { id: proposalId } = createProposalFromCore(path, {
-      trigger: { type: 'adopt', adoptedPath: path },
+      trigger,
       configYaml: agentsYaml,
       agentsSummary,
     });
@@ -480,12 +486,14 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
       projectName: name,
       proposalId,
       mergedExistingClaudeMd: claudeResult.merged,
+      recommendedSkillsCount: recommendedSkills?.length ?? 0,
     });
 
     return {
       projectName: name,
       proposalId,
       mergedExistingClaudeMd: claudeResult.merged,
+      recommendedSkills: recommendedSkills ?? [],
     };
   } catch (e) {
     setAdoptionStage(correlationId, 'error', { error: e?.message ?? String(e) });
@@ -512,17 +520,19 @@ function conflict(msg) {
  * CLAUDE.md / .dmux-agents.yml. Extracts two fenced blocks (claude-md,
  * yaml). Retries once on missing-block or schema-validation failure.
  */
-async function runDiscovery(projectPath, projectName) {
-  const ctx = buildDiscoveryContext(projectPath, projectName);
+async function runDiscovery(projectPath, projectName, opts = {}) {
+  const { additionalContext = null, skipClaudeMd = false } = opts;
+  const skillsCatalogue = buildSkillsCatalogueForPrompt();
+  const ctx = { ...buildDiscoveryContext(projectPath, projectName), skillsCatalogue };
   let lastError = null;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const prompt = buildDiscoveryPrompt(ctx, lastError);
+    const prompt = buildDiscoveryPrompt(ctx, lastError, { additionalContext, skipClaudeMd });
     const response = await execClaudeWithTimeout(prompt, DISCOVERY_MODEL, DISCOVERY_TIMEOUT_MS);
     const claudeMd = extractFencedBlock(response, 'claude-md');
     const yamlText = extractFencedBlock(response, ['yaml', 'yml']);
 
-    if (!claudeMd) {
+    if (!skipClaudeMd && !claudeMd) {
       lastError = 'Your previous response did not contain a ```claude-md fenced block. Emit one.';
       if (attempt === 2) throw new Error('Discovery produced no claude-md block after retry.');
       continue;
@@ -534,7 +544,8 @@ async function runDiscovery(projectPath, projectName) {
     }
     try {
       parseAgentsConfigFromCore(yamlText);
-      return { claudeMdContent: claudeMd, agentsYaml: yamlText };
+      const recommendedSkills = parseRecommendedSkillsBlock(response);
+      return { claudeMdContent: claudeMd, agentsYaml: yamlText, recommendedSkills };
     } catch (e) {
       lastError = `Your previous YAML was rejected by the schema validator: ${e.message}. Fix and re-emit.`;
       if (attempt === 2) {
@@ -542,6 +553,60 @@ async function runDiscovery(projectPath, projectName) {
       }
     }
   }
+}
+
+function buildSkillsCatalogueForPrompt() {
+  let skills;
+  try {
+    skills = getSkills();
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(skills) || skills.length === 0) return null;
+  return skills
+    .map((s) => `- ${s.name} (${s.installed ? 'already installed' : 'available'}): ${s.description ?? ''}`)
+    .join('\n');
+}
+
+/**
+ * Parse the optional ```recommended-skills fenced block from a discovery
+ * response. Format is a JSON array of { name, reason } objects. Returns
+ * a normalized array of { name, reason, installed }; bad/missing blocks
+ * yield an empty array (this is optional output, never fatal). Names that
+ * don't match any known skill are dropped silently — the agent doesn't get
+ * to introduce skills that don't exist.
+ */
+function parseRecommendedSkillsBlock(response) {
+  const block = extractFencedBlock(response, ['recommended-skills', 'json']);
+  if (!block) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(block);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  let catalogue;
+  try {
+    catalogue = getSkills();
+  } catch {
+    catalogue = [];
+  }
+  const byName = new Map(catalogue.map((s) => [s.name, s]));
+
+  const out = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry.name !== 'string' || typeof entry.reason !== 'string') continue;
+    const name = entry.name.trim();
+    const reason = entry.reason.trim();
+    if (!name || !reason) continue;
+    const catEntry = byName.get(name);
+    if (!catEntry) continue;  // drop names that don't exist in the catalogue
+    out.push({ name, reason, installed: Boolean(catEntry.installed) });
+    if (out.length >= 4) break;  // hard cap at 4 — design §3
+  }
+  return out;
 }
 
 function buildDiscoveryContext(projectPath, projectName) {
@@ -579,14 +644,17 @@ function safeReadFileSized(path, maxBytes) {
   }
 }
 
-function buildDiscoveryPrompt(ctx, retryError) {
+function buildDiscoveryPrompt(ctx, retryError, opts = {}) {
+  const { additionalContext = null, skipClaudeMd = false } = opts;
+  const hasSkills = Boolean(ctx.skillsCatalogue);
   const sections = [
-    `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit two artifacts: an updated CLAUDE.md and a starter .dmux-agents.yml.`,
+    skipClaudeMd
+      ? `You are dmux's discovery agent. You previously analyzed this project and proposed a team. The user has been chatting with you and now wants a regenerated .dmux-agents.yml that reflects their feedback. Emit only the YAML block — no CLAUDE.md.`
+      : `You are dmux's discovery agent. Read this project (the user just adopted it into dmux), then emit artifacts that get it set up: an updated CLAUDE.md, a starter .dmux-agents.yml, and (optionally) a list of skills from the catalogue that would help this project.`,
     ``,
-    `Output format: exactly two fenced code blocks, in this order:`,
-    `1. A \`\`\`claude-md fenced block`,
-    `2. A \`\`\`yaml fenced block`,
-    `Plus one short paragraph OUTSIDE both blocks summarizing what you found and what kind of starter team you proposed.`,
+    skipClaudeMd
+      ? `Output format: one fenced \`\`\`yaml code block. Optionally also a \`\`\`recommended-skills JSON block (see rules below). One short paragraph of summary OUTSIDE the blocks.`
+      : `Output format: two required fenced blocks, in this order:\n1. A \`\`\`claude-md fenced block\n2. A \`\`\`yaml fenced block\nOptionally, a third \`\`\`recommended-skills JSON block (see rules below).\nPlus one short paragraph OUTSIDE the blocks summarizing what you found.`,
     ``,
     `### CLAUDE.md rules`,
     `- Wrap your CLAUDE.md output in these HTML-comment markers (literal, on their own lines):`,
@@ -629,7 +697,25 @@ function buildDiscoveryPrompt(ctx, retryError) {
     ``,
     `Existing .dmux-agents.yml:`,
     ctx.existingAgentsYaml ? '```yaml\n' + ctx.existingAgentsYaml + '\n```' : '(none)',
+    ``,
+    `Skill catalogue (for the optional recommended-skills block):`,
+    hasSkills ? ctx.skillsCatalogue : '(no skills installed or available)',
+    ``,
+    `### Recommended-skills rules (optional output)`,
+    `If one or more skills from the catalogue above are clearly relevant to this repo, emit a third fenced block:`,
+    '```recommended-skills',
+    `[`,
+    `  { "name": "<exact-skill-name-from-catalogue>", "reason": "<one sentence grounded in repo evidence>" }`,
+    `]`,
+    '```',
+    `- Only recommend skills from the catalogue above. Exact name match required.`,
+    `- Each reason must cite something you observed in the repo. No generic recommendations.`,
+    `- It's fine to recommend nothing — omit the block entirely.`,
+    `- Don't recommend more than 4 skills.`,
   ];
+  if (additionalContext) {
+    sections.push('', additionalContext);
+  }
   if (retryError) {
     sections.push('', `IMPORTANT — this is a retry. ${retryError}`);
   }
@@ -726,6 +812,352 @@ export function writeClaudeMd(projectPath, content) {
   const next = existing.trimEnd() + '\n\n' + wrapped + '\n';
   writeFileSync(path, next);
   return { merged: true };
+}
+
+// ---------------------------------------------------------------------------
+// Discovery chat (Wave 2D Slice 1) — proposal-scoped chat surface where the
+// user converses with the discovery agent. Each chat is a JSON array at
+// `.dmux/chats/<proposalId>.json` bound to the lifetime of the proposal.
+// ---------------------------------------------------------------------------
+
+const CHAT_MODEL = 'sonnet';
+const CHAT_TIMEOUT_MS = 90_000;
+const CHAT_SOFT_CAP = 15;  // warn at this many total messages
+const CHAT_HARD_CAP = 25;  // refuse new messages past this
+
+function chatFilePath(projectPath, proposalId) {
+  return join(projectPath, '.dmux', 'chats', `${proposalId}.json`);
+}
+
+function buildChatGreeting(run) {
+  const n = run.config.agents.length;
+  const names = run.config.agents.map((a) => a.name).join(', ');
+  return `I read the repo and proposed a ${n}-agent team: ${names}. Ask me anything about what I found, or request changes to the team — I can re-propose with different agents.`;
+}
+
+/**
+ * Read the chat history for a proposal. Returns { greeting, messages,
+ * count, nearLimit, atHardCap }. Greeting is synthesized server-side from
+ * the proposal record; it isn't stored.
+ */
+export function readProposalChat(projectPath, proposalId) {
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  const greeting = buildChatGreeting(run);
+  const path = chatFilePath(projectPath, proposalId);
+  let messages = [];
+  if (existsSync(path)) {
+    try {
+      messages = JSON.parse(readFileSync(path, 'utf-8'));
+      if (!Array.isArray(messages)) messages = [];
+    } catch {
+      messages = [];
+    }
+  }
+  return {
+    greeting,
+    messages,
+    count: messages.length,
+    nearLimit: messages.length >= CHAT_SOFT_CAP,
+    atHardCap: messages.length >= CHAT_HARD_CAP,
+  };
+}
+
+function appendChatMessage(projectPath, proposalId, message) {
+  const dir = join(projectPath, '.dmux', 'chats');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const path = chatFilePath(projectPath, proposalId);
+  let messages = [];
+  if (existsSync(path)) {
+    try {
+      messages = JSON.parse(readFileSync(path, 'utf-8'));
+      if (!Array.isArray(messages)) messages = [];
+    } catch {
+      messages = [];
+    }
+  }
+  messages.push(message);
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, JSON.stringify(messages, null, 2));
+  renameSync(tmp, path);
+  return messages;
+}
+
+/**
+ * Run a single chat turn: append the user's message, assemble the full
+ * conversation as a prompt to claude --print, append the assistant's
+ * response, persist. Returns { message, count, nearLimit }.
+ *
+ * The discovery context (file tree, manifests, CLAUDE.md, current proposal)
+ * is re-fetched each turn. That's fine in v1 — the cost of re-reading local
+ * files is negligible compared to the LLM call.
+ */
+export async function runProposalChat(projectPath, projectName, proposalId, userMessage) {
+  if (typeof userMessage !== 'string' || userMessage.trim().length === 0) {
+    throw badRequest('message is required');
+  }
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  if (run.status !== 'proposed') {
+    throw conflict(`Proposal ${proposalId} is no longer in 'proposed' state (status=${run.status})`);
+  }
+
+  const existing = readProposalChat(projectPath, proposalId);
+  if (existing.atHardCap) {
+    const e = new Error(`Chat hard cap (${CHAT_HARD_CAP} messages) reached for this proposal.`);
+    e.status = 429;
+    throw e;
+  }
+
+  const trimmedUser = userMessage.trim();
+  appendChatMessage(projectPath, proposalId, {
+    role: 'user',
+    content: trimmedUser,
+    ts: new Date().toISOString(),
+  });
+
+  const ctx = buildDiscoveryContext(projectPath, projectName);
+  const prompt = buildChatPrompt(ctx, run, existing.greeting, existing.messages, trimmedUser);
+  const response = await execClaudeWithTimeout(prompt, CHAT_MODEL, CHAT_TIMEOUT_MS);
+
+  const assistantContent = (response ?? '').trim();
+  if (!assistantContent) {
+    throw new Error('The agent did not return a response. Try rephrasing.');
+  }
+
+  const assistantMessage = {
+    role: 'assistant',
+    content: assistantContent,
+    ts: new Date().toISOString(),
+  };
+  const all = appendChatMessage(projectPath, proposalId, assistantMessage);
+
+  return {
+    message: assistantMessage,
+    count: all.length,
+    nearLimit: all.length >= CHAT_SOFT_CAP,
+    atHardCap: all.length >= CHAT_HARD_CAP,
+  };
+}
+
+function buildChatPrompt(ctx, run, greeting, priorMessages, latestUserMessage) {
+  const sections = [
+    `You are dmux's discovery agent, in a chat with the user about a project you adopted into dmux. You already ran discovery; the user is now asking follow-ups or requesting changes to the team you proposed.`,
+    ``,
+    `Project context (loaded once; don't re-fetch):`,
+    `Project: ${ctx.projectName}`,
+    ``,
+    `File tree:`,
+    '```\n' + (ctx.fileTree || '(empty)') + '\n```',
+    ``,
+    `README:`,
+    ctx.readme ? '```\n' + ctx.readme + '\n```' : '(none)',
+    ``,
+    `CLAUDE.md you wrote:`,
+    ctx.existingClaudeMd ? '```\n' + ctx.existingClaudeMd + '\n```' : '(none)',
+    ``,
+    `Current proposed .dmux-agents.yml:`,
+    '```yaml\n' + run.config.yaml + '\n```',
+    ``,
+    `Conversation so far:`,
+    `Assistant (your opener): ${greeting}`,
+    ...priorMessages.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`),
+    `User: ${latestUserMessage}`,
+    ``,
+    `Rules:`,
+    `- Reply conversationally in plain prose. No fenced code blocks for new YAML — if the user wants the team changed, tell them you can regenerate the proposal and they can click "Regenerate proposal" to do it.`,
+    `- Keep replies tight: usually 2–4 sentences. Use bullet lists only when listing 3+ items.`,
+    `- Ground claims in the project context above. Don't make things up about files you haven't seen.`,
+    `- If the user is asking something off-topic from this project, redirect briefly.`,
+    ``,
+    `Respond to the user's latest message.`,
+  ];
+  return sections.join('\n');
+}
+
+/**
+ * Re-run discovery with the existing chat folded in as additional context.
+ * The resulting agents config replaces the proposal's frozen YAML in place
+ * (same run id, same proposed_at). The CLAUDE.md is NOT rewritten on
+ * regenerate — that was a one-time write at adoption time.
+ */
+export async function regenerateProposalFromChat(projectPath, projectName, proposalId) {
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  if (run.status !== 'proposed') {
+    throw conflict(`Proposal ${proposalId} is no longer in 'proposed' state`);
+  }
+
+  const chat = readProposalChat(projectPath, proposalId);
+  const additionalContext = chat.messages.length > 0
+    ? `The user has been chatting with you about this proposal. Their requested changes are in this transcript:\n\n` +
+      `Assistant (opener): ${chat.greeting}\n` +
+      chat.messages.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') +
+      `\n\nProduce an updated .dmux-agents.yml that reflects the user's intent from the conversation. The CLAUDE.md does not need to change.`
+    : '';
+
+  const { agentsYaml } = await runDiscovery(projectPath, projectName, { additionalContext, skipClaudeMd: true });
+
+  const parsed = parseAgentsConfigFromCore(agentsYaml);
+  const agentsSummary = parsed.agents.map((a) => ({
+    name: a.name,
+    role: a.role,
+    branch: a.branch || '',
+    model: a.model || null,
+    provider: a.provider || parsed.provider || 'claude',
+    depends_on: a.depends_on || [],
+  }));
+
+  updateProposalFromCore(projectPath, proposalId, {
+    configYaml: agentsYaml,
+    agentsSummary,
+  });
+
+  return { ok: true, proposalId };
+}
+
+function notFound(msg) {
+  const e = new Error(msg);
+  e.status = 404;
+  return e;
+}
+
+/**
+ * Apply user customizations to a proposal: rename agents (with depends_on
+ * rewrites) and/or override per-agent models. Server-side YAML rewrite via
+ * js-yaml — load to a plain object, mutate, dump back, validate via
+ * dmux-core's parseAgentsConfig, then updateProposal in place.
+ *
+ * renames: [{ from, to }]            — rename agents (no-op when from === to)
+ * modelOverrides: [{ agent, model }] — set model on the named agent; keyed
+ *                                       by ORIGINAL name (pre-rename)
+ *
+ * Throws with .status on validation problems so the route handler maps
+ * cleanly to HTTP codes. Atomic: any single failure aborts before
+ * updateProposal is called, so the persisted proposal is never partially
+ * updated.
+ */
+export function customizeProposal(projectPath, proposalId, { renames = [], modelOverrides = [] } = {}) {
+  const run = readRunFromCore(projectPath, proposalId);
+  if (!run) throw notFound(`Proposal not found: ${proposalId}`);
+  if (run.status !== 'proposed') {
+    throw conflict(`Proposal ${proposalId} is no longer in 'proposed' state`);
+  }
+
+  // Build maps and validate against the current proposal up front.
+  const currentNames = new Set(run.config.agents.map((a) => a.name));
+  const renameMap = new Map();
+  const newNamesUsed = new Set();
+  for (const r of renames) {
+    if (!r || typeof r.from !== 'string' || typeof r.to !== 'string') {
+      throw badRequest('renames entries need string `from` and `to`');
+    }
+    const from = r.from.trim();
+    const to = r.to.trim();
+    if (!from || !to) throw badRequest('rename names cannot be empty');
+    if (from === to) continue;
+    if (!currentNames.has(from)) {
+      throw badRequest(`Cannot rename '${from}' — no such agent in this proposal`);
+    }
+    if (renameMap.has(from)) {
+      throw badRequest(`Duplicate rename for agent '${from}'`);
+    }
+    // Collision detection: the new name can't already be a current agent
+    // name (unless that agent is also being renamed away) or another rename's
+    // target.
+    if (newNamesUsed.has(to)) {
+      throw badRequest(`Rename collision — multiple agents would end up named '${to}'`);
+    }
+    if (currentNames.has(to) && !renames.some((x) => x.from === to && x.from !== to)) {
+      throw badRequest(`Rename collision — '${to}' is already an agent`);
+    }
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(to)) {
+      throw badRequest(`'${to}' is not a valid agent name (use A-Z, a-z, 0-9, _, - up to 32 chars)`);
+    }
+    renameMap.set(from, to);
+    newNamesUsed.add(to);
+  }
+
+  const modelMap = new Map();
+  for (const m of modelOverrides) {
+    if (!m || typeof m.agent !== 'string' || typeof m.model !== 'string') {
+      throw badRequest('modelOverrides entries need string `agent` and `model`');
+    }
+    const agent = m.agent.trim();
+    const model = m.model.trim();
+    if (!currentNames.has(agent)) {
+      throw badRequest(`Cannot override model on '${agent}' — no such agent in this proposal`);
+    }
+    if (modelMap.has(agent)) {
+      throw badRequest(`Duplicate model override for agent '${agent}'`);
+    }
+    modelMap.set(agent, model);
+  }
+
+  if (renameMap.size === 0 && modelMap.size === 0) {
+    // No-op; just return the current state without round-tripping the YAML.
+    return { ok: true, proposalId };
+  }
+
+  // Load, mutate, dump.
+  let doc;
+  try {
+    doc = yaml.load(run.config.yaml);
+  } catch (e) {
+    throw new Error(`Could not parse current proposal YAML: ${e.message}`);
+  }
+  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.agents)) {
+    throw new Error('Current proposal YAML is not in the expected shape');
+  }
+
+  // Apply renames + model overrides.
+  for (const agent of doc.agents) {
+    if (!agent || typeof agent !== 'object') continue;
+    const original = typeof agent.name === 'string' ? agent.name : null;
+    if (original && modelMap.has(original)) {
+      agent.model = modelMap.get(original);
+    }
+    if (original && renameMap.has(original)) {
+      agent.name = renameMap.get(original);
+    }
+  }
+  // Update depends_on references on all agents.
+  for (const agent of doc.agents) {
+    if (!agent || typeof agent !== 'object') continue;
+    if (Array.isArray(agent.depends_on)) {
+      agent.depends_on = agent.depends_on.map((dep) =>
+        typeof dep === 'string' && renameMap.has(dep) ? renameMap.get(dep) : dep,
+      );
+    } else if (typeof agent.depends_on === 'string' && renameMap.has(agent.depends_on)) {
+      agent.depends_on = renameMap.get(agent.depends_on);
+    }
+  }
+
+  const newYaml = yaml.dump(doc, { lineWidth: 100, noRefs: true });
+
+  // Validate the rewrite before persisting.
+  let parsed;
+  try {
+    parsed = parseAgentsConfigFromCore(newYaml);
+  } catch (e) {
+    throw new Error(`Customize produced invalid YAML: ${e.message}`);
+  }
+
+  const agentsSummary = parsed.agents.map((a) => ({
+    name: a.name,
+    role: a.role,
+    branch: a.branch || '',
+    model: a.model || null,
+    provider: a.provider || parsed.provider || 'claude',
+    depends_on: a.depends_on || [],
+  }));
+
+  updateProposalFromCore(projectPath, proposalId, {
+    configYaml: newYaml,
+    agentsSummary,
+  });
+
+  return { ok: true, proposalId };
 }
 
 /**

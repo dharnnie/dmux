@@ -107,7 +107,9 @@ export default function AdoptSheet({ open, onClose }) {
         }
         throw new Error(body.error || `HTTP ${res.status}`);
       }
-      toast(`Adopted ${body.projectName} — review the starter team.`, 'success');
+      const recsCount = body.recommendedSkills?.length ?? 0;
+      const recsSuffix = recsCount > 0 ? ` ${recsCount} skill${recsCount === 1 ? '' : 's'} also recommended.` : '';
+      toast(`Adopted ${body.projectName} — review the starter team.${recsSuffix}`, 'success');
       onClose();
       navigate(`/projects/${body.projectName}/runs/${body.proposalId}`);
     } catch (e) {

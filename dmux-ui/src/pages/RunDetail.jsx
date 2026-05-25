@@ -3,8 +3,12 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import Card, { CardTitle } from '../components/Card';
 import Disclosure from '../components/Disclosure';
 import Button from '../components/Button';
+import Tabs from '../components/Tabs';
 import { ConfirmDialog } from '../components/Sheet';
 import { useToast } from '../components/Toasts';
+import ProposalChat from '../components/ProposalChat';
+import RecommendedSkillsCard from '../components/RecommendedSkillsCard';
+import CustomizePanel from '../components/CustomizePanel';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -263,6 +267,57 @@ function formatTrigger(t) {
   return 'Manual';
 }
 
+function ReviewTabContent({ run, prompt, recommendedSkills }) {
+  const [dismissedRecs, setDismissedRecs] = useState(false);
+  return (
+    <>
+      {prompt && (
+        <Card header={<CardTitle>Your request</CardTitle>}>
+          <blockquote className={styles.prompt}>{prompt}</blockquote>
+        </Card>
+      )}
+
+      {recommendedSkills.length > 0 && !dismissedRecs && (
+        <RecommendedSkillsCard
+          recommendations={recommendedSkills}
+          onDismiss={() => setDismissedRecs(true)}
+        />
+      )}
+
+      <Card header={<CardTitle>Proposed agents</CardTitle>}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Role</th>
+              <th>Model</th>
+              <th>Branch</th>
+              <th>Depends on</th>
+            </tr>
+          </thead>
+          <tbody>
+            {run.agents.map((a) => (
+              <tr key={a.name} className={styles.row}>
+                <td className={styles.cellName}>{a.name}</td>
+                <td className={styles.cellMono}>{a.role}</td>
+                <td className={styles.cellMono}>{a.model ?? '—'}</td>
+                <td className={styles.cellMono}>{a.branch || '—'}</td>
+                <td className={styles.cellMono}>
+                  {a.depends_on && a.depends_on.length > 0 ? a.depends_on.join(', ') : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Disclosure title="Proposed .dmux-agents.yml" defaultOpen>
+        <pre className={styles.yaml}>{run.config.yaml}</pre>
+      </Disclosure>
+    </>
+  );
+}
+
 function formatTimestamp(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -299,8 +354,10 @@ function formatAgentDuration(run, a) {
 // ---------------------------------------------------------------------------
 
 function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
-  const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | null
+  const [busy, setBusy] = useState(null); // 'approve' | 'discard' | 'edit' | 'customize-approve' | null
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [customizing, setCustomizing] = useState(false);
+  const [tab, setTab] = useState('review');
   const triggerType = run.trigger?.type ?? null;
   const isAdopt = triggerType === 'adopt';
   const adoptedPath = isAdopt ? run.trigger?.adoptedPath ?? null : null;
@@ -318,6 +375,38 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
       onSuccess?.(body);
     } catch (e) {
       toast(`Couldn't ${action}: ${e.message}`, 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Customize-then-approve: POST customize first, then approve. The
+  // customize endpoint validates renames + model overrides server-side
+  // and rewrites depends_on references; on its success we run the same
+  // approve path the regular button uses.
+  const handleCustomizeAndApprove = async ({ renames, modelOverrides }) => {
+    setBusy('customize-approve');
+    try {
+      const customizeRes = await fetch(`/api/projects/${name}/runs/${runId}/customize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renames, modelOverrides }),
+      });
+      const customizeBody = await customizeRes.json().catch(() => ({}));
+      if (!customizeRes.ok) throw new Error(customizeBody.error || `HTTP ${customizeRes.status}`);
+
+      // Customizations persisted. Now approve via the existing endpoint.
+      const approveRes = await fetch(`/api/projects/${name}/proposals/${runId}/approve`, {
+        method: 'POST',
+      });
+      const approveBody = await approveRes.json().catch(() => ({}));
+      if (!approveRes.ok) throw new Error(approveBody.error || `HTTP ${approveRes.status}`);
+
+      toast('Customized & approved — agents starting.', 'success');
+      setCustomizing(false);
+      onChange();
+    } catch (e) {
+      toast(`Customize & approve failed: ${e.message}`, 'error');
     } finally {
       setBusy(null);
     }
@@ -355,82 +444,89 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
         </div>
       )}
 
-      {prompt && (
-        <Card header={<CardTitle>Your request</CardTitle>}>
-          <blockquote className={styles.prompt}>{prompt}</blockquote>
-        </Card>
+      {isAdopt ? (
+        <Tabs
+          tabs={[
+            { value: 'review', label: 'Review' },
+            { value: 'chat', label: 'Chat with discovery' },
+          ]}
+          value={tab}
+          onChange={setTab}
+        >
+          {tab === 'review' && (
+            <ReviewTabContent
+              run={run}
+              prompt={prompt}
+              recommendedSkills={run.trigger?.recommendedSkills ?? []}
+            />
+          )}
+          {tab === 'chat' && (
+            <ProposalChat
+              projectName={name}
+              proposalId={runId}
+              onProposalChange={onChange}
+            />
+          )}
+        </Tabs>
+      ) : (
+        <ReviewTabContent run={run} prompt={prompt} recommendedSkills={[]} />
       )}
 
-      <Card header={<CardTitle>Proposed agents</CardTitle>}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Agent</th>
-              <th>Role</th>
-              <th>Model</th>
-              <th>Branch</th>
-              <th>Depends on</th>
-            </tr>
-          </thead>
-          <tbody>
-            {run.agents.map((a) => (
-              <tr key={a.name} className={styles.row}>
-                <td className={styles.cellName}>{a.name}</td>
-                <td className={styles.cellMono}>{a.role}</td>
-                <td className={styles.cellMono}>{a.model ?? '—'}</td>
-                <td className={styles.cellMono}>{a.branch || '—'}</td>
-                <td className={styles.cellMono}>
-                  {a.depends_on && a.depends_on.length > 0 ? a.depends_on.join(', ') : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-
-      <Disclosure title="Proposed .dmux-agents.yml" defaultOpen>
-        <pre className={styles.yaml}>{run.config.yaml}</pre>
-      </Disclosure>
-
-      <div className={styles.proposalActions}>
-        <Button
-          variant="primary"
-          onClick={() =>
-            callAction('approve', 'approve', 'Approved — agents starting.', () => {
-              // The next poll picks up the status flip; we also trigger a
-              // refresh so the user sees the running view immediately.
-              onChange();
-            })
-          }
-          loading={busy === 'approve'}
-          disabled={busy !== null}
-        >
-          Approve & Run
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() =>
-            callAction(
-              'edit',
-              'promote-to-edit',
-              'Loaded into the editor — tweak then start a run.',
-              () => navigate(`/projects/${name}/agents`),
-            )
-          }
-          loading={busy === 'edit'}
-          disabled={busy !== null}
-        >
-          Edit before running
-        </Button>
-        <span className={styles.proposalSpacer} />
-        <Button
-          variant="danger"
-          onClick={() => setConfirmDiscard(true)}
-          disabled={busy !== null}
-        >
-          Discard
-        </Button>
-      </div>
+      {customizing ? (
+        <CustomizePanel
+          agents={run.agents}
+          submitting={busy === 'customize-approve'}
+          onSubmit={handleCustomizeAndApprove}
+          onCancel={() => setCustomizing(false)}
+        />
+      ) : (
+        <div className={styles.proposalActions}>
+          <Button
+            variant="primary"
+            onClick={() =>
+              callAction('approve', 'approve', 'Approved — agents starting.', () => {
+                // The next poll picks up the status flip; we also trigger a
+                // refresh so the user sees the running view immediately.
+                onChange();
+              })
+            }
+            loading={busy === 'approve'}
+            disabled={busy !== null}
+          >
+            Approve & Run
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setCustomizing(true)}
+            disabled={busy !== null}
+          >
+            Customize & Run
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              callAction(
+                'edit',
+                'promote-to-edit',
+                'Loaded into the editor — tweak then start a run.',
+                () => navigate(`/projects/${name}/agents`),
+              )
+            }
+            loading={busy === 'edit'}
+            disabled={busy !== null}
+          >
+            Edit before running
+          </Button>
+          <span className={styles.proposalSpacer} />
+          <Button
+            variant="danger"
+            onClick={() => setConfirmDiscard(true)}
+            disabled={busy !== null}
+          >
+            Discard
+          </Button>
+        </div>
+      )}
 
       <ConfirmDialog
         open={confirmDiscard}

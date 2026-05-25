@@ -2483,6 +2483,28 @@ except Exception: print(sys.stdin.read()[:300] or "(no body)")' 2>/dev/null)
   echo ""
   echo "Review the starter team:"
   echo "  $server_url/projects/$pname/runs/$pid"
+
+  # If discovery surfaced recommended skills, print them. Wraps the JSON
+  # parse in a try so a missing/empty `recommendedSkills` is a silent no-op.
+  local recs
+  recs=$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    items = data.get("recommendedSkills") or []
+    if items:
+        print("")
+        print("Recommended skills based on this repo:")
+        for r in items:
+            print("  · " + r.get("name", "?") + " — " + r.get("reason", ""))
+        print("")
+        print("Install with: dmux skills install <name>")
+except Exception:
+    pass
+' 2>/dev/null)
+  if [[ -n "$recs" ]]; then
+    echo "$recs"
+  fi
   return 0
 }
 

@@ -311,3 +311,47 @@
 .proposalSpacer {
   flex: 1;
 }
+
+.prdMarkdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  padding: var(--space-2) 0;
+}
+
+.prdMarkdown h1,
+.prdMarkdown h2,
+.prdMarkdown h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-weight: 600;
+}
+
+.prdMarkdown h1 { font-size: 18px; }
+.prdMarkdown h2 { font-size: 16px; }
+.prdMarkdown h3 { font-size: 14px; }
+
+.prdMarkdown p {
+  margin: 0 0 var(--space-3);
+}
+
+.prdMarkdown ul,
+.prdMarkdown ol {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-4);
+}
+
+.prdMarkdown code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.prdMarkdown pre {
+  background: var(--bg-input);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 12px;
+}

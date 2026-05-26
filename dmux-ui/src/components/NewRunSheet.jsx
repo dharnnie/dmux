@@ -35,6 +35,8 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
   const [submitting, setSubmitting] = useState(false);
   const [renderedPreview, setRenderedPreview] = useState(null);
   const [smartPrompt, setSmartPrompt] = useState('');
+  const [prdContent, setPrdContent] = useState('');
+  const [prdFilename, setPrdFilename] = useState('');
 
   // Reset internal state every time the sheet opens.
   useEffect(() => {
@@ -48,6 +50,8 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
     setSubmitting(false);
     setRenderedPreview(null);
     setSmartPrompt('');
+    setPrdContent('');
+    setPrdFilename('');
   }, [open, initialProject]);
 
   useEffect(() => {
@@ -58,26 +62,29 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
 
   const hasInputs = Boolean(skill?.inputs && skill.inputs.length > 0);
 
-  // Step index for the progress dots. Smart path is 2 steps total (path →
-  // prompt → off to the proposal review page, which is its own route). Quick
-  // is 3 steps with 'inputs' folded into step 2 visually.
+  // Step index for the progress dots. Smart and PRD paths are 2 steps total
+  // (path → input → off to proposal review). Quick is 3 steps with 'inputs'
+  // folded into step 2 visually.
   const isSmart = path === 'smart';
-  const totalSteps = isSmart ? 2 : 3;
+  const isPrd = path === 'prd';
+  const totalSteps = isSmart || isPrd ? 2 : 3;
   const titleStepNum =
     step === 'path' ? 1 :
     step === 'smart-prompt' ? 2 :
+    step === 'prd-input' ? 2 :
     step === 'skill' ? 2 :
     step === 'inputs' ? 2 :
     3;
   const titleLabel = {
     path: 'Choose path',
     'smart-prompt': 'Describe the work',
+    'prd-input': 'From PRD',
     skill: 'Pick skill',
     inputs: 'Fill inputs',
     review: 'Review',
   }[step] ?? '';
   const title = `Step ${titleStepNum} of ${totalSteps} — ${titleLabel}`;
-  const isReview = step === 'review' || step === 'smart-prompt';
+  const isReview = step === 'review' || step === 'smart-prompt' || step === 'prd-input';
 
   const handleBack = () => {
     if (submitting) return;
@@ -85,11 +92,38 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
     else if (step === 'inputs') setStep('skill');
     else if (step === 'skill') setStep('path');
     else if (step === 'smart-prompt') setStep('path');
+    else if (step === 'prd-input') setStep('path');
   };
 
   const handleInputsContinue = () => {
     setInputErrors({});
     setStep('review');
+  };
+
+  const handlePrdSubmit = async () => {
+    if (!project || !prdContent.trim()) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(`/api/projects/${project}/proposals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prdContent,
+          source: 'prd',
+          prdMarkdown: prdContent,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) {
+        throw new Error(body.error || `Planner failed (HTTP ${res.status})`);
+      }
+      toast(`Proposal ready from ${prdFilename || 'PRD'} — review the planned team.`, 'success');
+      onClose();
+      navigate(`/projects/${project}/runs/${body.proposalId}`);
+    } catch (e) {
+      toast(`Planner: ${e.message}`, 'error');
+      setSubmitting(false);
+    }
   };
 
   const handleSmartSubmit = async () => {
@@ -187,6 +221,23 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
         </Button>
       </>
     );
+  } else if (step === 'prd-input') {
+    footer = (
+      <>
+        <Button variant="secondary" onClick={handleBack} disabled={submitting}>
+          ← Back
+        </Button>
+        <span className={styles.footerSpacer} />
+        <Button
+          variant="primary"
+          onClick={handlePrdSubmit}
+          loading={submitting}
+          disabled={!project || !prdContent.trim()}
+        >
+          {submitting ? 'Planning…' : 'Plan team →'}
+        </Button>
+      </>
+    );
   } else if (step === 'inputs') {
     footer = (
       <>
@@ -233,7 +284,9 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
         <PathStep
           onPick={(p) => {
             setPath(p);
-            setStep(p === 'smart' ? 'smart-prompt' : 'skill');
+            if (p === 'smart') setStep('smart-prompt');
+            else if (p === 'prd') setStep('prd-input');
+            else setStep('skill');
           }}
         />
       )}
@@ -245,6 +298,19 @@ export default function NewRunSheet({ open, onClose, initialProject = null }) {
           onProjectChange={setProject}
           prompt={smartPrompt}
           onPromptChange={setSmartPrompt}
+          submitting={submitting}
+        />
+      )}
+
+      {step === 'prd-input' && (
+        <PrdInputStep
+          projects={projects}
+          project={project}
+          onProjectChange={setProject}
+          content={prdContent}
+          onContentChange={setPrdContent}
+          filename={prdFilename}
+          onFilenameChange={setPrdFilename}
           submitting={submitting}
         />
       )}
@@ -326,6 +392,115 @@ function PathStep({ onPick }) {
           <div className={styles.pathArrow} aria-hidden="true">Describe →</div>
         </div>
       </button>
+
+      <button type="button" className={styles.pathCard} onClick={() => onPick('prd')}>
+        <span className={styles.pathGlyph} aria-hidden="true">📄</span>
+        <div className={styles.pathBody}>
+          <div className={styles.pathTitle}>From PRD</div>
+          <div className={styles.pathDesc}>
+            Drop or paste a markdown spec you wrote elsewhere. The planner
+            reads the whole thing and proposes a team for it.
+          </div>
+          <div className={styles.pathArrow} aria-hidden="true">Upload →</div>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+// ---------- Step 2 (PRD): From PRD ----------
+
+function PrdInputStep({
+  projects, project, onProjectChange,
+  content, onContentChange,
+  filename, onFilenameChange,
+  submitting,
+}) {
+  const [dragging, setDragging] = useState(false);
+
+  const ingestFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      onContentChange(text);
+      onFilenameChange(file.name);
+    } catch {
+      // Read failure — surface silently; the textarea is still available.
+    }
+  };
+
+  const handleFileInput = (e) => {
+    const file = e.target.files?.[0];
+    if (file) ingestFile(file);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) ingestFile(file);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragging(true);
+  };
+
+  const handleDragLeave = () => setDragging(false);
+
+  return (
+    <div className={styles.prdStep}>
+      <Select
+        label="Project"
+        value={project ?? ''}
+        onChange={(e) => onProjectChange(e.target.value || null)}
+        disabled={submitting}
+        helperText="The planner reads this project's file tree + your PRD as context."
+      >
+        <option value="">— pick a project —</option>
+        {projects.map((p) => (
+          <option key={p.name} value={p.name}>{p.name}</option>
+        ))}
+      </Select>
+
+      <div
+        className={`${styles.prdDropZone} ${dragging ? styles.prdDropZoneActive : ''}`}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+      >
+        Drop a <code>.md</code> file here, or paste content below.
+        <label className={styles.prdFileLabel}>
+          Pick a file…
+          <input
+            type="file"
+            accept=".md,.markdown,text/markdown,text/plain"
+            onChange={handleFileInput}
+            disabled={submitting}
+            className={styles.prdFileInput}
+          />
+        </label>
+        {filename && <span className={styles.prdFileName}>📄 {filename}</span>}
+      </div>
+
+      <Textarea
+        label="PRD or feature spec (markdown)"
+        value={content}
+        onChange={(e) => {
+          onContentChange(e.target.value);
+          if (filename) onFilenameChange('');  // edited away from the original file
+        }}
+        disabled={submitting}
+        rows={12}
+        placeholder="# Feature name&#10;&#10;## Goal&#10;..."
+        helperText={`${content.length} characters${content.length > 0 ? ` · ~${Math.ceil(content.length / 4000)} pages` : ''}`}
+      />
+
+      {submitting && (
+        <p className={styles.prdHint}>
+          Planner is working… this usually takes 10–30 seconds for a PRD.
+        </p>
+      )}
     </div>
   );
 }

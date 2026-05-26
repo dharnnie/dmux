@@ -41,6 +41,8 @@ import {
   runProposalChat,
   regenerateProposalFromChat,
   customizeProposal,
+  readPrdArtifact,
+  readRunViolationsSummaryWithNotify,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -373,7 +375,15 @@ app.post('/api/projects/:name/proposals', async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required.' });
     }
 
-    const { proposalId } = await runPlanner(project.path, project.name, prompt);
+    const source = req.body?.source === 'prd' ? 'prd' : null;
+    const prdMarkdown = source === 'prd' && typeof req.body?.prdMarkdown === 'string'
+      ? req.body.prdMarkdown
+      : null;
+
+    const { proposalId } = await runPlanner(project.path, project.name, prompt, {
+      source,
+      prdMarkdown,
+    });
     res.json({ ok: true, proposalId });
   } catch (e) {
     const msg = e?.message ?? String(e);
@@ -381,6 +391,22 @@ app.post('/api/projects/:name/proposals', async (req, res) => {
     if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
     if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
     res.status(500).json({ error: msg });
+  }
+});
+
+// Read the PRD artifact for a PRD-sourced proposal. Returns the raw
+// markdown or 404 if none. Front-end renders via react-markdown.
+app.get('/api/projects/:name/runs/:proposalId/prd', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const markdown = readPrdArtifact(project.path, req.params.proposalId);
+    if (markdown === null) return res.status(404).json({ error: 'No PRD on file for this proposal' });
+    res.type('text/markdown').send(markdown);
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
@@ -514,14 +540,16 @@ app.post('/api/projects/:name/runs/:runId/stop', (req, res) => {
 });
 
 // Per-agent violation counts for the whole run — used by Run Detail to
-// render the banner + row badges in a single fetch.
+// render the banner + row badges in a single fetch. Also fires a
+// scope_violation notification when an agent's count transitions from
+// 0/null → non-zero (Wave 3A Slice 2).
 app.get('/api/projects/:name/runs/:runId/violations-summary', (req, res) => {
   try {
     const projects = parseProjectsFile();
     const project = projects.find((p) => p.name === req.params.name);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    res.json(readRunViolationsSummary(project.path, req.params.runId));
+    res.json(readRunViolationsSummaryWithNotify(project.path, project.name, req.params.runId));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

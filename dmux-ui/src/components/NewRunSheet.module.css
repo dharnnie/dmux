@@ -122,6 +122,70 @@
   font-style: italic;
 }
 
+/* Step 2 (PRD path) — drop / paste markdown */
+.prdStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.prdDropZone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-input);
+  border: 2px dashed var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.prdDropZone code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-primary);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.prdDropZoneActive {
+  border-color: var(--accent-cyan);
+  background: color-mix(in srgb, var(--accent-cyan) 8%, var(--bg-input));
+  color: var(--text-primary);
+}
+
+.prdFileLabel {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--accent-cyan);
+  text-decoration: underline;
+}
+
+.prdFileInput {
+  display: none;
+}
+
+.prdFileName {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+
+.prdHint {
+  margin: 0;
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
 .skillList {
   list-style: none;
   margin: 0;

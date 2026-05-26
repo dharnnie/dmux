@@ -177,7 +177,8 @@ const FILE_TREE_SKIP = new Set([
  * Returns { proposalId } on success. Throws with a user-readable message on
  * any failure — the route handler maps to HTTP status.
  */
-export async function runPlanner(projectPath, projectName, userPrompt) {
+export async function runPlanner(projectPath, projectName, userPrompt, opts = {}) {
+  const { source = null, prdMarkdown = null } = opts;
   if (typeof userPrompt !== 'string' || userPrompt.trim().length === 0) {
     throw new Error('Prompt is required.');
   }
@@ -223,13 +224,57 @@ export async function runPlanner(projectPath, projectName, userPrompt) {
     depends_on: a.depends_on || [],
   }));
 
+  const trigger = { type: 'nl', prompt: userPrompt };
+  if (source === 'prd' && typeof prdMarkdown === 'string') {
+    trigger.source = 'prd';
+    trigger.prdPath = `.dmux/prds/${'placeholder'}.md`;  // overwritten below with the real id
+  }
+
   const { id } = createProposalFromCore(projectPath, {
-    trigger: { type: 'nl', prompt: userPrompt },
+    trigger,
     configYaml: yamlText,
     agentsSummary,
   });
 
+  // Persist the original PRD alongside the proposal for audit + the
+  // GET /prd endpoint. Patch trigger.prdPath now that we have the id.
+  if (source === 'prd' && typeof prdMarkdown === 'string') {
+    writePrdArtifact(projectPath, id, prdMarkdown);
+    const realPath = `.dmux/prds/${id}.md`;
+    // Re-write the proposal's trigger.prdPath. updateProposal preserves
+    // trigger, so we go through readRun → manual write.
+    const finalTrigger = { ...trigger, prdPath: realPath };
+    rewriteTrigger(projectPath, id, finalTrigger);
+  }
+
   return { proposalId: id };
+}
+
+function rewriteTrigger(projectPath, runId, newTrigger) {
+  const runJsonPath = join(projectPath, '.dmux', 'runs', runId, 'run.json');
+  if (!existsSync(runJsonPath)) return;
+  const run = JSON.parse(readFileSync(runJsonPath, 'utf-8'));
+  run.trigger = newTrigger;
+  writeFileSync(runJsonPath, JSON.stringify(run, null, 2));
+}
+
+/**
+ * PRD artifact storage at `.dmux/prds/<proposalId>.md`. Atomic write via
+ * tmpfile + rename (same pattern as chat storage in Wave 2D).
+ */
+export function writePrdArtifact(projectPath, proposalId, markdown) {
+  const dir = join(projectPath, '.dmux', 'prds');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${proposalId}.md`);
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, markdown);
+  renameSync(tmp, path);
+}
+
+export function readPrdArtifact(projectPath, proposalId) {
+  const path = join(projectPath, '.dmux', 'prds', `${proposalId}.md`);
+  if (!existsSync(path)) return null;
+  return readFileSync(path, 'utf-8');
 }
 
 function safeReadFile(path) {

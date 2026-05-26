@@ -966,17 +966,59 @@ handle_screenshot_command() {
   echo "     Switch to your tmux session and press Enter to use it."
 }
 
+# Path to the user's notification preferences file. Honors XDG_CONFIG_HOME.
+NOTIFY_PREFS_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/dmux/notifications.json"
+
+# Returns 0 if the event should fire, 1 if disabled by user preferences.
+# Defaults to "fire" when:
+#   - event_type is empty (legacy call path with no event tag)
+#   - the prefs file doesn't exist
+#   - python3 isn't on PATH (we use it to parse JSON safely)
+#   - the file is malformed JSON
+#   - the event key isn't listed in the file
+# Only an explicit `false` value silences the event.
+notification_enabled() {
+  local event_type="$1"
+  [[ -z "$event_type" ]] && return 0
+  [[ ! -f "$NOTIFY_PREFS_FILE" ]] && return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local result
+  result=$(python3 - "$event_type" "$NOTIFY_PREFS_FILE" <<'PYEOF' 2>/dev/null
+import json, sys
+event_type, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        prefs = json.load(f)
+except Exception:
+    print("on"); sys.exit(0)
+
+# Global kill switch wins over per-event.
+if prefs.get("enabled") is False:
+    print("off"); sys.exit(0)
+
+events = prefs.get("events", {})
+val = events.get(event_type, True)  # missing key → default on
+print("on" if val else "off")
+PYEOF
+)
+  [[ "$result" == "off" ]] && return 1
+  return 0
+}
+
 # Send a desktop notification (macOS via osascript, Linux via notify-send).
-# Silently no-ops if neither tool is available.
+# Silently no-ops if neither tool is available, or if the user has disabled
+# this event type in ~/.config/dmux/notifications.json (see notification_enabled
+# above for the exact rules).
 #
-# Optional third arg is the event type (Wave 3A): proposal_ready,
-# run_completed, run_failed, agent_succeeded, scope_violation,
-# agent_blocked_on_permission. Per-event preference lookup lands in Slice 3;
-# this slice accepts the arg and always fires.
+# Event types (Wave 3A): proposal_ready, run_completed, run_failed,
+# agent_succeeded, scope_violation, agent_blocked_on_permission.
 send_notification() {
   local title="$1"
   local message="$2"
-  local event_type="${3:-}"  # reserved for Slice 3 preferences; ignored here
+  local event_type="${3:-}"
+
+  notification_enabled "$event_type" || return 0
 
   if [[ "$(uname)" == "Darwin" ]]; then
     osascript -e "display notification \"$message\" with title \"$title\"" 2>/dev/null || true

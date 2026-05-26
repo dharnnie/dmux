@@ -14,6 +14,7 @@ export default function ProjectSummaryHeader({
   agentCount,
   onNewRun,
   configHref,
+  chatHref,
 }) {
   return (
     <header className={styles.wrapper}>
@@ -48,6 +49,11 @@ export default function ProjectSummaryHeader({
       </div>
 
       <div className={styles.actions}>
+        {chatHref && (
+          <Button variant="ghost" size="sm" to={chatHref}>
+            💬 Chat
+          </Button>
+        )}
         <Button variant="ghost" size="sm" to={configHref}>
           Edit config →
         </Button>

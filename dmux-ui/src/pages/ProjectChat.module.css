@@ -1,0 +1,16 @@
+.page {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.backLink {
+  display: inline-block;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+  margin-bottom: var(--space-3);
+}
+
+.backLink:hover {
+  color: var(--text-primary);
+}

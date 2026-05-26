@@ -1,0 +1,218 @@
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 600px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.loading {
+  color: var(--text-secondary);
+  padding: var(--space-4);
+  text-align: center;
+  font-size: 14px;
+}
+
+.header {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.headerLabel {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.headerSubtitle {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-top: 2px;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message[data-role='user'] {
+  align-self: flex-end;
+  max-width: 80%;
+}
+
+.message[data-role='assistant'] {
+  align-self: flex-start;
+  max-width: 90%;
+}
+
+.messageHeader {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.messageHint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+}
+
+.messageBody {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.message[data-role='user'] .messageBody {
+  background: color-mix(in srgb, var(--accent-cyan) 15%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 30%, transparent);
+}
+
+.messageBody p { margin: 0 0 var(--space-2); }
+.messageBody p:last-child { margin-bottom: 0; }
+
+.messageBody code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.messageBody pre {
+  background: var(--bg-input);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 12px;
+}
+
+.messageBody ul,
+.messageBody ol {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+}
+
+.thinking {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-primary);
+}
+
+.input {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 14px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.composerSpacer { flex: 1; }
+
+.counter {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.counter[data-tone='warn'] {
+  color: var(--accent-orange);
+}
+
+.composerHint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* API key missing panel */
+.apiKeyPanel {
+  max-width: 600px;
+  margin: var(--space-5) auto;
+  padding: var(--space-4);
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+
+.apiKeyPanel h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.apiKeyPanel p {
+  margin: 0 0 var(--space-3);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.apiKeyPanel a {
+  color: var(--accent-cyan);
+}
+
+.apiKeyCode {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--bg-primary);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+
+.apiKeyHint {
+  font-style: italic;
+  color: var(--text-secondary);
+  font-size: 13px !important;
+}

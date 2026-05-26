@@ -968,9 +968,16 @@ handle_screenshot_command() {
 
 # Send a desktop notification (macOS via osascript, Linux via notify-send).
 # Silently no-ops if neither tool is available.
+#
+# Optional third arg is the event type (Wave 3A): proposal_ready,
+# run_completed, run_failed, agent_succeeded, scope_violation,
+# agent_blocked_on_permission. Per-event preference lookup lands in Slice 3;
+# this slice accepts the arg and always fires.
 send_notification() {
   local title="$1"
   local message="$2"
+  local event_type="${3:-}"  # reserved for Slice 3 preferences; ignored here
+
   if [[ "$(uname)" == "Darwin" ]]; then
     osascript -e "display notification \"$message\" with title \"$title\"" 2>/dev/null || true
   elif command -v notify-send &>/dev/null; then
@@ -1556,9 +1563,9 @@ agents_start() {
     # Build per-agent notification commands (empty when notifications disabled)
     local notify_ok="" notify_fail="" notify_blocked=""
     if [[ "$AGENTS_NOTIFICATIONS" == "true" ]]; then
-      notify_ok="; '${dmux_bin}' _notify 'dmux: ${name} finished' 'Agent completed successfully'"
-      notify_fail="; '${dmux_bin}' _notify 'dmux: ${name} failed' 'Agent exited with code '\$_exit"
-      notify_blocked="; '${dmux_bin}' _notify 'dmux: ${name} blocked' 'Skipped — dependency failed'"
+      notify_ok="; '${dmux_bin}' _notify 'dmux: ${name} finished' 'Agent completed successfully' agent_succeeded"
+      notify_fail="; '${dmux_bin}' _notify 'dmux: ${name} failed' 'Agent exited with code '\$_exit run_failed"
+      notify_blocked="; '${dmux_bin}' _notify 'dmux: ${name} blocked' 'Skipped — dependency failed' run_failed"
     fi
 
     if [[ -n "$deps" ]]; then
@@ -2994,7 +3001,16 @@ case "${1:-}" in
     ;;
   _notify)
     # Internal subcommand: send a desktop notification
-    send_notification "$2" "$3"
+    # Usage: dmux _notify <title> <message> [event_type]
+    send_notification "$2" "$3" "${4:-}"
+    exit 0
+    ;;
+  _notify-permission)
+    # Internal subcommand (Wave 3A): notify that an agent is blocked waiting
+    # for a Y/N permission prompt. Wired only — bash doesn't yet detect this
+    # state automatically; trigger logic is a follow-up (design §5.7).
+    # Usage: dmux _notify-permission <agent-name> <project-name>
+    send_notification "dmux: Agent waiting" "$2 in $3 needs a permission Y/N" "agent_blocked_on_permission"
     exit 0
     ;;
   _notify-summary)
@@ -3011,7 +3027,7 @@ case "${1:-}" in
       if [[ "$_code" == "0" ]]; then ((_ok++)); else ((_fail++)); fi
     done
     if $_all_done; then
-      send_notification "dmux: All agents finished" "$_ok succeeded, $_fail failed"
+      send_notification "dmux: Run completed" "$_ok succeeded, $_fail failed" "run_completed"
     fi
     exit 0
     ;;

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 import Card, { CardTitle } from '../components/Card';
 import Disclosure from '../components/Disclosure';
 import Button from '../components/Button';
@@ -262,15 +263,68 @@ export default function RunDetail() {
 function formatTrigger(t) {
   if (!t) return 'Manual';
   if (t.type === 'skill') return `Skill: ${t.skill_name ?? '?'}`;
-  if (t.type === 'nl') return `NL: ${t.prompt ?? '?'}`;
+  if (t.type === 'nl') {
+    if (t.source === 'prd') return `PRD: ${prdFilenameFromPath(t.prdPath) ?? 'untitled.md'}`;
+    return `NL: ${t.prompt ?? '?'}`;
+  }
   if (t.type === 'adopt') return 'Adopted from disk';
   return 'Manual';
 }
 
-function ReviewTabContent({ run, prompt, recommendedSkills }) {
+function prdFilenameFromPath(path) {
+  if (!path || typeof path !== 'string') return null;
+  const parts = path.split('/');
+  return parts[parts.length - 1] || null;
+}
+
+function PrdCard({ projectName, proposalId, filename }) {
+  const [content, setContent] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectName}/runs/${proposalId}/prd`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        if (!cancelled) setContent(text);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [projectName, proposalId]);
+
+  return (
+    <Card header={<CardTitle>From PRD</CardTitle>}>
+      <Disclosure title={`📄 ${filename ?? 'PRD'}`}>
+        {error ? (
+          <p className={styles.error}>Could not load PRD: {error}</p>
+        ) : content === null ? (
+          <p className={styles.loading}>Loading PRD…</p>
+        ) : (
+          <div className={styles.prdMarkdown}>
+            <ReactMarkdown>{content}</ReactMarkdown>
+          </div>
+        )}
+      </Disclosure>
+    </Card>
+  );
+}
+
+function ReviewTabContent({ run, prompt, recommendedSkills, isPrd, projectName, proposalId }) {
   const [dismissedRecs, setDismissedRecs] = useState(false);
   return (
     <>
+      {isPrd && (
+        <PrdCard
+          projectName={projectName}
+          proposalId={proposalId}
+          filename={prdFilenameFromPath(run.trigger?.prdPath)}
+        />
+      )}
+
       {prompt && (
         <Card header={<CardTitle>Your request</CardTitle>}>
           <blockquote className={styles.prompt}>{prompt}</blockquote>
@@ -359,9 +413,13 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
   const [customizing, setCustomizing] = useState(false);
   const [tab, setTab] = useState('review');
   const triggerType = run.trigger?.type ?? null;
+  const triggerSource = run.trigger?.source ?? null;
   const isAdopt = triggerType === 'adopt';
+  const isPrd = triggerSource === 'prd';
   const adoptedPath = isAdopt ? run.trigger?.adoptedPath ?? null : null;
-  const prompt = !isAdopt ? run.trigger?.prompt ?? null : null;
+  // Suppress the NL "Your request" card for adopt (covered by banner) and
+  // for PRD (covered by the PRD card).
+  const prompt = (!isAdopt && !isPrd) ? run.trigger?.prompt ?? null : null;
 
   const callAction = async (action, path, successMessage, onSuccess) => {
     setBusy(action);
@@ -458,6 +516,9 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
               run={run}
               prompt={prompt}
               recommendedSkills={run.trigger?.recommendedSkills ?? []}
+              isPrd={isPrd}
+              projectName={name}
+              proposalId={runId}
             />
           )}
           {tab === 'chat' && (
@@ -469,7 +530,14 @@ function ProposalReview({ run, name, runId, onChange, navigate, toast }) {
           )}
         </Tabs>
       ) : (
-        <ReviewTabContent run={run} prompt={prompt} recommendedSkills={[]} />
+        <ReviewTabContent
+          run={run}
+          prompt={prompt}
+          recommendedSkills={[]}
+          isPrd={isPrd}
+          projectName={name}
+          proposalId={runId}
+        />
       )}
 
       {customizing ? (

@@ -2508,6 +2508,158 @@ except Exception:
   return 0
 }
 
+# ------------------------------------------------------------------------------
+# `dmux propose` (Wave 3A Slice 1)
+#
+# Pipes a markdown PRD file through the existing NL planner endpoint and
+# stages a proposal. Same server-running requirement as `dmux adopt`.
+# ------------------------------------------------------------------------------
+
+propose_usage() {
+  cat << EOF
+Usage: dmux propose <project> --prd <file>
+
+Pipe a markdown PRD or feature spec through the NL planner. Stages a
+starter team as a proposal for review on the proposal-review page.
+
+Requires the dmux UI server to be running (start with 'dmux ui').
+
+Arguments:
+  <project>     Project name (must already be registered)
+  --prd <file>  Path to a markdown file containing the PRD / spec
+
+Exit codes:
+  0 — success
+  1 — usage / server unreachable / network failure
+  2 — file or project not found
+  4 — planner failure (LLM produced unparseable output or claude CLI missing)
+EOF
+}
+
+handle_propose_command() {
+  local project_name=""
+  local prd_file=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prd)
+        [[ -z "${2:-}" ]] && { echo "Error: --prd requires a path" >&2; return 1; }
+        prd_file="$2"
+        shift 2
+        ;;
+      -h|--help)
+        propose_usage
+        return 0
+        ;;
+      -*)
+        echo "Error: Unknown option '$1'" >&2
+        propose_usage >&2
+        return 1
+        ;;
+      *)
+        if [[ -n "$project_name" ]]; then
+          echo "Error: unexpected argument '$1'" >&2
+          return 1
+        fi
+        project_name="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$project_name" || -z "$prd_file" ]]; then
+    propose_usage >&2
+    return 1
+  fi
+
+  if [[ ! -f "$prd_file" ]]; then
+    echo "Error: PRD file not found: $prd_file" >&2
+    return 2
+  fi
+
+  require_command "curl" "calling the dmux UI server" || return 1
+  require_command "python3" "encoding the PRD as JSON" || return 1
+
+  local server_url="${DMUX_UI_URL:-http://localhost:3100}"
+  if ! curl -sf --max-time 2 "$server_url/api/projects" >/dev/null 2>&1; then
+    echo "Error: dmux UI server not reachable at $server_url" >&2
+    echo "  Start it in another tab: dmux ui" >&2
+    return 1
+  fi
+
+  # Validate the project exists in the registry by hitting /api/projects.
+  if ! curl -sf "$server_url/api/projects" | python3 -c "
+import json, sys
+projects = json.load(sys.stdin)
+names = [p['name'] for p in projects]
+sys.exit(0 if '$project_name' in names else 1)
+" 2>/dev/null; then
+    echo "Error: project '$project_name' not registered. Run 'dmux -l' to list." >&2
+    return 2
+  fi
+
+  echo "Planning team for $project_name from $(basename "$prd_file")…"
+
+  # Build JSON body via python so we get proper escaping of the PRD content.
+  local body
+  body=$(PRD_FILE="$prd_file" python3 -c "
+import json, os
+with open(os.environ['PRD_FILE']) as f:
+    content = f.read()
+print(json.dumps({
+    'prompt': content,
+    'source': 'prd',
+    'prdMarkdown': content,
+}))
+")
+
+  local resp_file code_file
+  resp_file="$(mktemp)"
+  code_file="$(mktemp)"
+  trap "rm -f '$resp_file' '$code_file'" EXIT INT TERM
+
+  curl -s -o "$resp_file" --max-time 180 \
+    -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "$body" \
+    "$server_url/api/projects/$project_name/proposals" > "$code_file"
+
+  local code resp
+  code=$(cat "$code_file")
+  resp=$(cat "$resp_file")
+  rm -f "$resp_file" "$code_file"
+  trap - EXIT INT TERM
+
+  if [[ "$code" != "200" ]]; then
+    local err
+    err=$(printf '%s' "$resp" | python3 -c "
+import json, sys
+try:
+    print(json.load(sys.stdin).get('error', 'unknown error'))
+except Exception:
+    print(sys.stdin.read()[:300] or '(no body)')
+" 2>/dev/null)
+    echo "" >&2
+    echo "Error (HTTP $code): $err" >&2
+    case "$code" in
+      400) return 2 ;;
+      404) return 2 ;;
+      422|503|504) return 4 ;;
+      *)   return 1 ;;
+    esac
+  fi
+
+  local pid
+  pid=$(printf '%s' "$resp" | python3 -c "import json, sys; print(json.load(sys.stdin)['proposalId'])" 2>/dev/null)
+
+  echo "  ✓ Proposal staged"
+  echo ""
+  echo "Review the proposed team:"
+  echo "  $server_url/projects/$project_name/runs/$pid"
+  return 0
+}
+
 usage() {
   cat << EOF
 dmux v$VERSION - Launch development environments with tmux + AI coding agents
@@ -2517,6 +2669,7 @@ USAGE:
   $(basename "$0") agents <action>         Multi-agent orchestration
   $(basename "$0") skills <action>         Install and run reusable agent skills
   $(basename "$0") adopt <path>            Adopt an existing repo into dmux
+  $(basename "$0") propose <p> --prd <f>   Stage a proposal from a PRD markdown file
   $(basename "$0") screenshot               Paste clipboard image into a tmux pane
   $(basename "$0") ui                      Open the local web UI
   $(basename "$0") update                  Self-update to latest version
@@ -2810,6 +2963,7 @@ case "${1:-}" in
   agents) shift; handle_agents_command "$@"; exit $? ;;
   skills) shift; handle_skills_command "$@"; exit $? ;;
   adopt)  shift; handle_adopt_command "$@"; exit $? ;;
+  propose) shift; handle_propose_command "$@"; exit $? ;;
   screenshot) shift; handle_screenshot_command "$@"; exit $? ;;
   update) dmux_update; exit $? ;;
   ui)

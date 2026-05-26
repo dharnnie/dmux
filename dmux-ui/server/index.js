@@ -44,6 +44,13 @@ import {
   readPrdArtifact,
   readRunViolationsSummaryWithNotify,
 } from './lib/dmux.js';
+import {
+  readChat,
+  streamProjectChatTurn,
+  buildProjectChatGreeting,
+  hasAnthropicKey,
+  CHAT_LIMITS,
+} from './lib/chat.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -556,6 +563,59 @@ app.get('/api/projects/:name/runs/:runId/violations-summary', (req, res) => {
 });
 
 // Full violations payload for one agent — used by the Violations tab on
+// ---------------------------------------------------------------------------
+// Wave 3B chat — project-scoped (Slice 1). Global comes in Slice 2.
+// ---------------------------------------------------------------------------
+
+// Read project chat history + a server-synthesized greeting. The greeting
+// isn't stored; it's regenerated each fetch so it always reflects the
+// current project name.
+app.get('/api/chat/project/:name', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const { messages } = readChat('project', project.path);
+    res.json({
+      greeting: buildProjectChatGreeting(project.name),
+      messages,
+      count: messages.length,
+      nearLimit: messages.length >= CHAT_LIMITS.soft,
+      atHardCap: messages.length >= CHAT_LIMITS.hard,
+      apiKeyConfigured: hasAnthropicKey(),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Stream one chat turn as Server-Sent Events. Body: { message }. Response
+// is text/event-stream with `data: {type, ...}\n\n` frames — see
+// lib/chat.js streamProjectChatTurn for the event shapes.
+app.post('/api/chat/project/:name/message', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    const message = (req.body?.message ?? '').toString();
+    const runs = listRunsForProject(project.path);
+    await streamProjectChatTurn(project.path, project.name, message, runs, res);
+  } catch (e) {
+    // streamProjectChatTurn handles its own response state; this only
+    // catches pre-stream errors.
+    if (!res.headersSent) {
+      res.status(500).json({ error: e?.message ?? String(e) });
+    } else {
+      try { res.end(); } catch {}
+    }
+  }
+});
+
 // Agent Detail.
 app.get('/api/projects/:name/runs/:runId/agents/:agentName/violations', (req, res) => {
   try {

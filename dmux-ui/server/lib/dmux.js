@@ -247,6 +247,14 @@ export async function runPlanner(projectPath, projectName, userPrompt, opts = {}
     rewriteTrigger(projectPath, id, finalTrigger);
   }
 
+  notify(
+    'proposal_ready',
+    'dmux: Proposal ready',
+    source === 'prd'
+      ? `From PRD on ${projectName} — review the planned team`
+      : `Planner finished on ${projectName} — review the planned team`,
+  );
+
   return { proposalId: id };
 }
 
@@ -533,6 +541,12 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
       mergedExistingClaudeMd: claudeResult.merged,
       recommendedSkillsCount: recommendedSkills?.length ?? 0,
     });
+
+    notify(
+      'proposal_ready',
+      'dmux: Proposal ready',
+      `Adopted ${name} — review the starter team`,
+    );
 
     return {
       projectName: name,
@@ -1057,6 +1071,12 @@ export async function regenerateProposalFromChat(projectPath, projectName, propo
     configYaml: agentsYaml,
     agentsSummary,
   });
+
+  notify(
+    'proposal_ready',
+    'dmux: Proposal updated',
+    `Regenerated from chat on ${projectName} — review the new team`,
+  );
 
   return { ok: true, proposalId };
 }
@@ -1882,6 +1902,71 @@ export function createWsServer(httpServer) {
   wss.on('close', () => clearInterval(heartbeat));
 
   return wss;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (Wave 3A Slice 2) — server-originating events shell back to
+// `dmux _notify` so cross-platform dispatch stays in one place (osascript /
+// notify-send / no-op). Preference lookup lands in Slice 3.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire a notification by shelling `dmux _notify`. Fire-and-forget: errors
+ * are swallowed so notification failures never affect the calling flow.
+ */
+export function notify(eventType, title, message) {
+  try {
+    const dmuxPath = getDmuxPath();
+    if (!dmuxPath) return;  // dmux binary not found; nothing to dispatch
+    exec(
+      `"${dmuxPath}" _notify "${escapeShellArg(title)}" "${escapeShellArg(message)}" "${escapeShellArg(eventType)}"`,
+      { timeout: 5000 },
+      () => {},  // ignore errors
+    );
+  } catch {
+    // never throw to the caller
+  }
+}
+
+function escapeShellArg(s) {
+  if (typeof s !== 'string') return '';
+  // Escape backslashes and double quotes so the value survives our outer
+  // double-quoted argv slot in exec(). Trim long messages so a 50KB PRD
+  // doesn't end up in a notification.
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').slice(0, 240);
+}
+
+// Per-(project, run, agent) last-seen violation count. New non-zero counts
+// fire `scope_violation`. Bounded growth: in-memory only; cleared on server
+// restart. Polling endpoint feeds this on every read.
+const lastViolationCounts = new Map();
+
+function violationKey(projectName, runId, agentName) {
+  return `${projectName}::${runId}::${agentName}`;
+}
+
+/**
+ * Compute the violations summary for a run AND fire scope_violation
+ * notifications for any agent whose count just transitioned from 0/null →
+ * non-zero. Idempotent: counts that stay the same fire nothing; counts that
+ * grow fire once each transition.
+ */
+export function readRunViolationsSummaryWithNotify(projectPath, projectName, runId) {
+  const result = readRunViolationsSummary(projectPath, runId);
+  for (const [agentName, count] of Object.entries(result.byAgent ?? {})) {
+    if (typeof count !== 'number' || count <= 0) continue;
+    const key = violationKey(projectName, runId, agentName);
+    const prev = lastViolationCounts.get(key) ?? 0;
+    if (count > prev) {
+      notify(
+        'scope_violation',
+        'dmux: Scope violation',
+        `${agentName} in ${projectName} wrote outside its scope (${count} file${count === 1 ? '' : 's'})`,
+      );
+    }
+    lastViolationCounts.set(key, count);
+  }
+  return result;
 }
 
 function getDmuxPath() {

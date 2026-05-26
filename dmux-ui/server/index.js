@@ -42,6 +42,7 @@ import {
   regenerateProposalFromChat,
   customizeProposal,
   readPrdArtifact,
+  readRunViolationsSummaryWithNotify,
 } from './lib/dmux.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -539,14 +540,16 @@ app.post('/api/projects/:name/runs/:runId/stop', (req, res) => {
 });
 
 // Per-agent violation counts for the whole run — used by Run Detail to
-// render the banner + row badges in a single fetch.
+// render the banner + row badges in a single fetch. Also fires a
+// scope_violation notification when an agent's count transitions from
+// 0/null → non-zero (Wave 3A Slice 2).
 app.get('/api/projects/:name/runs/:runId/violations-summary', (req, res) => {
   try {
     const projects = parseProjectsFile();
     const project = projects.find((p) => p.name === req.params.name);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    res.json(readRunViolationsSummary(project.path, req.params.runId));
+    res.json(readRunViolationsSummaryWithNotify(project.path, project.name, req.params.runId));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

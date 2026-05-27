@@ -26,6 +26,7 @@ import {
 } from 'fs';
 import { homedir } from 'os';
 import { join, relative } from 'path';
+import { parseProjectsFile } from './dmux.js';
 
 const CHAT_MODEL = 'sonnet';
 const CHAT_TIMEOUT_MS = 120_000;
@@ -186,14 +187,77 @@ function buildSystemPrompt(scope, ctx) {
     ].join('\n');
   }
   if (scope === 'global') {
-    // Implemented in Slice 2.
-    return `You are dmux's global chat assistant.`;
+    const projectLines = ctx.projects.length === 0
+      ? '(none registered yet)'
+      : ctx.projects
+          .map((p) => `- ${p.name} (${p.path})${p.summary ? `\n    ${p.summary}` : ''}`)
+          .join('\n');
+    return [
+      `You are dmux's global chat assistant. You know about the user's registered dmux projects (their names + paths + a one-line description per project where one's available). You do NOT have access to any project's file tree, code, or history — those live behind each project's own chat.`,
+      ``,
+      `Conventions:`,
+      `- Be concise. Default to 2–4 sentences. Bullet lists only for 3+ items.`,
+      `- For questions about a specific project's internals, suggest opening that project's chat (link in the navbar / Project Detail page).`,
+      `- If the user is converging on an actionable plan for a specific project, suggest they click "Convert to proposal" — they'll pick which project to target.`,
+      `- For cross-project brainstorming, you're the right surface. Help them think through priorities, naming, sequencing, etc.`,
+      ``,
+      `Registered projects:`,
+      projectLines,
+    ].join('\n');
   }
   throw new Error(`Unknown chat scope: ${scope}`);
 }
 
 export function buildProjectChatGreeting(projectName) {
   return `I know about ${projectName}. Ask me about the codebase, plan changes, or have me draft a proposal when you're ready.`;
+}
+
+/**
+ * Global context envelope — Wave 3B Slice 2. The agent sees the project
+ * registry (name + path + first line of CLAUDE.md per project) but no
+ * file trees. For digging into a specific project the user is steered to
+ * open that project's chat instead.
+ */
+export function buildGlobalChatContext() {
+  let projects;
+  try {
+    projects = parseProjectsFile();
+  } catch {
+    projects = [];
+  }
+  return {
+    projects: projects.map((p) => ({
+      name: p.name,
+      path: p.path,
+      summary: firstLineOfClaudeMd(p.path),
+    })),
+  };
+}
+
+function firstLineOfClaudeMd(projectPath) {
+  const path = join(projectPath, 'CLAUDE.md');
+  const content = safeRead(path);
+  if (!content) return null;
+  // Skip a leading "# Title" heading; we want the descriptive line that
+  // tells the user what this project is for.
+  const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (line.startsWith('#')) continue;
+    if (line.startsWith('<!--')) continue;
+    return line.slice(0, 200);
+  }
+  return null;
+}
+
+export function buildGlobalChatGreeting() {
+  const ctx = buildGlobalChatContext();
+  const n = ctx.projects.length;
+  if (n === 0) {
+    return `You haven't registered any dmux projects yet. Add one with \`dmux -a <name> <path>\` or use the Adopt button on the Dashboard. I can still chat — I just won't know about anything specific to act on.`;
+  }
+  const sample = ctx.projects.slice(0, 5).map((p) => p.name).join(', ');
+  const more = n > 5 ? `, +${n - 5} more` : '';
+  return `I know about ${n} project${n === 1 ? '' : 's'} you've registered: ${sample}${more}. Ask me anything across them, or open a project's chat for codebase-specific questions.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +375,70 @@ export async function runProjectChatTurn(projectPath, projectName, userMessage, 
     ts: new Date().toISOString(),
   };
   const all = appendChatMessage('project', projectPath, assistantMessage);
+
+  return {
+    message: assistantMessage,
+    count: all.length,
+    nearLimit: all.length >= SOFT_CAP_MESSAGES,
+    atHardCap: all.length >= HARD_CAP_MESSAGES,
+  };
+}
+
+/**
+ * dmux-global chat turn. Mirrors runProjectChatTurn but with the global
+ * context envelope and the global system prompt. Storage lives at
+ * ~/.config/dmux/chats/global.json (honors XDG_CONFIG_HOME).
+ */
+export async function runGlobalChatTurn(userMessage) {
+  if (typeof userMessage !== 'string' || userMessage.trim().length === 0) {
+    const e = new Error('message is required');
+    e.status = 400;
+    throw e;
+  }
+
+  const existing = readChat('global', null);
+  if (existing.messages.length >= HARD_CAP_MESSAGES) {
+    const e = new Error(`Chat hard cap (${HARD_CAP_MESSAGES} messages) reached. Convert to a proposal or start a new chat.`);
+    e.status = 429;
+    throw e;
+  }
+
+  const trimmedUser = userMessage.trim();
+  appendChatMessage('global', null, {
+    role: 'user',
+    content: trimmedUser,
+    ts: new Date().toISOString(),
+  });
+
+  const ctx = buildGlobalChatContext();
+  const systemPrompt = buildSystemPrompt('global', ctx);
+  const greeting = buildGlobalChatGreeting();
+
+  const stored = readChat('global', null).messages;
+
+  const sections = [
+    systemPrompt,
+    ``,
+    `Conversation so far:`,
+    `Assistant (opener): ${greeting}`,
+    ...stored.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`),
+    ``,
+    `Respond to the user's latest message in plain prose. Markdown OK; no fenced YAML or proposal configs — that's the planner's job.`,
+  ];
+  const prompt = sections.join('\n');
+
+  const response = await execClaude(prompt);
+  const assistantContent = (response ?? '').trim();
+  if (!assistantContent) {
+    throw new Error('Assistant returned an empty response. Try rephrasing.');
+  }
+
+  const assistantMessage = {
+    role: 'assistant',
+    content: assistantContent,
+    ts: new Date().toISOString(),
+  };
+  const all = appendChatMessage('global', null, assistantMessage);
 
   return {
     message: assistantMessage,

@@ -47,7 +47,9 @@ import {
 import {
   readChat,
   runProjectChatTurn,
+  runGlobalChatTurn,
   buildProjectChatGreeting,
+  buildGlobalChatGreeting,
   CHAT_LIMITS,
 } from './lib/chat.js';
 
@@ -601,6 +603,36 @@ app.post('/api/chat/project/:name/message', async (req, res) => {
     const message = (req.body?.message ?? '').toString();
     const runs = listRunsForProject(project.path);
     const result = await runProjectChatTurn(project.path, project.name, message, runs);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// dmux-global chat. Single chat per installation; lives at
+// ~/.config/dmux/chats/global.json. Context envelope is the registered
+// project list — no file trees. For project-internal questions, the
+// project-scoped chat is the right surface.
+app.get('/api/chat/global', (req, res) => {
+  try {
+    const { messages } = readChat('global', null);
+    res.json({
+      greeting: buildGlobalChatGreeting(),
+      messages,
+      count: messages.length,
+      nearLimit: messages.length >= CHAT_LIMITS.soft,
+      atHardCap: messages.length >= CHAT_LIMITS.hard,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post('/api/chat/global/message', async (req, res) => {
+  try {
+    const message = (req.body?.message ?? '').toString();
+    const result = await runGlobalChatTurn(message);
     res.json(result);
   } catch (e) {
     const status = e?.status ?? 500;

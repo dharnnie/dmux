@@ -1095,16 +1095,17 @@ function notFound(msg) {
  * js-yaml — load to a plain object, mutate, dump back, validate via
  * dmux-core's parseAgentsConfig, then updateProposal in place.
  *
- * renames: [{ from, to }]            — rename agents (no-op when from === to)
- * modelOverrides: [{ agent, model }] — set model on the named agent; keyed
- *                                       by ORIGINAL name (pre-rename)
+ * renames: [{ from, to }]                  — rename agents (no-op when from===to)
+ * modelOverrides: [{ agent, model }]       — set model on the named agent
+ * providerOverrides: [{ agent, provider }] — set provider on the named agent
+ *                                            (Wave 3C). Keyed by ORIGINAL name.
  *
  * Throws with .status on validation problems so the route handler maps
  * cleanly to HTTP codes. Atomic: any single failure aborts before
  * updateProposal is called, so the persisted proposal is never partially
  * updated.
  */
-export function customizeProposal(projectPath, proposalId, { renames = [], modelOverrides = [] } = {}) {
+export function customizeProposal(projectPath, proposalId, { renames = [], modelOverrides = [], providerOverrides = [] } = {}) {
   const run = readRunFromCore(projectPath, proposalId);
   if (!run) throw notFound(`Proposal not found: ${proposalId}`);
   if (run.status !== 'proposed') {
@@ -1161,7 +1162,23 @@ export function customizeProposal(projectPath, proposalId, { renames = [], model
     modelMap.set(agent, model);
   }
 
-  if (renameMap.size === 0 && modelMap.size === 0) {
+  const providerMap = new Map();
+  for (const p of providerOverrides) {
+    if (!p || typeof p.agent !== 'string' || typeof p.provider !== 'string') {
+      throw badRequest('providerOverrides entries need string `agent` and `provider`');
+    }
+    const agent = p.agent.trim();
+    const provider = p.provider.trim();
+    if (!currentNames.has(agent)) {
+      throw badRequest(`Cannot override provider on '${agent}' — no such agent in this proposal`);
+    }
+    if (providerMap.has(agent)) {
+      throw badRequest(`Duplicate provider override for agent '${agent}'`);
+    }
+    providerMap.set(agent, provider);
+  }
+
+  if (renameMap.size === 0 && modelMap.size === 0 && providerMap.size === 0) {
     // No-op; just return the current state without round-tripping the YAML.
     return { ok: true, proposalId };
   }
@@ -1177,10 +1194,14 @@ export function customizeProposal(projectPath, proposalId, { renames = [], model
     throw new Error('Current proposal YAML is not in the expected shape');
   }
 
-  // Apply renames + model overrides.
+  // Apply renames + model + provider overrides. Provider before rename so
+  // both lookups key off the same original name.
   for (const agent of doc.agents) {
     if (!agent || typeof agent !== 'object') continue;
     const original = typeof agent.name === 'string' ? agent.name : null;
+    if (original && providerMap.has(original)) {
+      agent.provider = providerMap.get(original);
+    }
     if (original && modelMap.has(original)) {
       agent.model = modelMap.get(original);
     }

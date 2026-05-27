@@ -43,9 +43,42 @@
 .rowFields {
   flex: 1;
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 2fr 1fr 1fr;
   gap: var(--space-3);
   align-items: start;
+}
+
+.capLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.capLineLabel {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.capChip {
+  font-family: var(--font-mono);
+}
+
+.capChip strong {
+  color: var(--text-primary);
+}
+
+.capChipNote {
+  font-family: var(--font-sans);
+  font-style: italic;
 }
 
 .actions {

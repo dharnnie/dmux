@@ -53,6 +53,7 @@ import {
   convertChatToProposal,
   CHAT_LIMITS,
 } from './lib/chat.js';
+import { getProviders } from './lib/providers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -520,7 +521,8 @@ app.post('/api/projects/:name/runs/:proposalId/customize', (req, res) => {
 
     const renames = Array.isArray(req.body?.renames) ? req.body.renames : [];
     const modelOverrides = Array.isArray(req.body?.modelOverrides) ? req.body.modelOverrides : [];
-    const result = customizeProposal(project.path, req.params.proposalId, { renames, modelOverrides });
+    const providerOverrides = Array.isArray(req.body?.providerOverrides) ? req.body.providerOverrides : [];
+    const result = customizeProposal(project.path, req.params.proposalId, { renames, modelOverrides, providerOverrides });
     res.json(result);
   } catch (e) {
     const status = e?.status;
@@ -717,6 +719,12 @@ app.get('/api/skills', (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Capability matrix for agent-runner providers. Read by the Customize
+// panel's provider picker and capability summary line.
+app.get('/api/providers', (req, res) => {
+  res.json(getProviders());
 });
 
 app.post('/api/skills/:name/install', (req, res) => {

@@ -9,6 +9,7 @@ import RunDetail from './pages/RunDetail';
 import AgentDetail from './pages/AgentDetail';
 import Skills from './pages/Skills';
 import ProjectChat from './pages/ProjectChat';
+import GlobalChat from './pages/GlobalChat';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="/projects/:name/runs/:runId" element={<RunDetail />} />
           <Route path="/projects/:name/runs/:runId/agents/:agentName" element={<AgentDetail />} />
           <Route path="/skills" element={<Skills />} />
+          <Route path="/chat" element={<GlobalChat />} />
         </Routes>
       </main>
     </ToastProvider>

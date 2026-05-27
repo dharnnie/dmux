@@ -16,6 +16,8 @@ export default function ProjectChat() {
         apiBase={`/api/chat/project/${name}`}
         scopeLabel="Project chat"
         subtitle={name}
+        defaultProject={name}
+        lockProject
       />
     </div>
   );

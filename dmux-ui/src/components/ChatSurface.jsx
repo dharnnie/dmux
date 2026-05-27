@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import Button from './Button';
+import ConvertToProposalModal from './ConvertToProposalModal';
 import { useToast } from './Toasts';
 import styles from './ChatSurface.module.css';
 
@@ -17,15 +19,26 @@ import styles from './ChatSurface.module.css';
  * placeholder while the server waits, then the full assistant message.
  *
  * Props:
- *   apiBase       — e.g. '/api/chat/project/<name>'
- *   scopeLabel    — short heading label
- *   subtitle      — optional one-liner under the heading
+ *   apiBase         — e.g. '/api/chat/project/<name>'
+ *   scopeLabel      — short heading label
+ *   subtitle        — optional one-liner under the heading
+ *   defaultProject  — for the Convert modal; pre-selected target project
+ *                     (locked when lockProject=true)
+ *   lockProject     — true for project-scoped chats; user can't change target
  */
-export default function ChatSurface({ apiBase, scopeLabel, subtitle }) {
+export default function ChatSurface({
+  apiBase,
+  scopeLabel,
+  subtitle,
+  defaultProject = null,
+  lockProject = false,
+}) {
   const toast = useToast();
+  const navigate = useNavigate();
   const [state, setState] = useState(null);  // initial GET response
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [convertOpen, setConvertOpen] = useState(false);
   const scrollRef = useRef(null);
 
   // Initial load.
@@ -137,6 +150,14 @@ export default function ChatSurface({ apiBase, scopeLabel, subtitle }) {
           </span>
           <span className={styles.composerSpacer} />
           <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setConvertOpen(true)}
+            disabled={sending || state.count === 0}
+          >
+            Convert to proposal
+          </Button>
+          <Button
             variant="primary"
             size="sm"
             onClick={handleSend}
@@ -148,6 +169,19 @@ export default function ChatSurface({ apiBase, scopeLabel, subtitle }) {
         </div>
         <p className={styles.composerHint}>⌘/Ctrl + Enter to send</p>
       </div>
+
+      <ConvertToProposalModal
+        open={convertOpen}
+        onClose={() => setConvertOpen(false)}
+        defaultProject={defaultProject}
+        lockProject={lockProject}
+        convertEndpoint={`${apiBase}/convert`}
+        onSuccess={({ proposalId, projectName }) => {
+          setConvertOpen(false);
+          toast(`Proposal staged on ${projectName} — review the planned team.`, 'success');
+          navigate(`/projects/${projectName}/runs/${proposalId}`);
+        }}
+      />
     </div>
   );
 }

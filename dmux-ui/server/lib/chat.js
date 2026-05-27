@@ -26,7 +26,7 @@ import {
 } from 'fs';
 import { homedir } from 'os';
 import { join, relative } from 'path';
-import { parseProjectsFile } from './dmux.js';
+import { parseProjectsFile, runPlanner } from './dmux.js';
 
 const CHAT_MODEL = 'sonnet';
 const CHAT_TIMEOUT_MS = 120_000;
@@ -446,6 +446,57 @@ export async function runGlobalChatTurn(userMessage) {
     nearLimit: all.length >= SOFT_CAP_MESSAGES,
     atHardCap: all.length >= HARD_CAP_MESSAGES,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Convert chat to proposal (Wave 3B Slice 3) — the bridge back to action.
+// Pipes the full transcript through the existing NL planner so the user can
+// land on the proposal review page and approve like any other proposal.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param scope            'project' or 'global'
+ * @param sourceIdentifier the chat-storage identifier (project path for
+ *                         project-scope; null for global-scope)
+ * @param targetProjectPath path of the project the proposal will live on
+ * @param targetProjectName name of that project
+ */
+export async function convertChatToProposal(scope, sourceIdentifier, targetProjectPath, targetProjectName) {
+  const { messages } = readChat(scope, sourceIdentifier);
+  if (messages.length === 0) {
+    const e = new Error('Chat is empty — nothing to convert.');
+    e.status = 400;
+    throw e;
+  }
+
+  // Format the transcript as a planner prompt. The wrapper text tells the
+  // planner what it's looking at; the messages are the actual content.
+  const transcript = messages
+    .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n\n');
+  const prompt = [
+    `Here is a conversation between a user and an assistant about a project. The user has decided to act on the intent expressed in this conversation and wants you to propose a team that does so.`,
+    ``,
+    `Read the conversation carefully. Identify what the user wants to ship. Propose the simplest team that accomplishes it — don't over-engineer; the user can iterate later.`,
+    ``,
+    `Conversation:`,
+    transcript,
+  ].join('\n');
+
+  // Provenance: where the chat lived. Stored on the proposal's trigger for
+  // future "view source chat" UX (not surfaced yet — v1 is just the badge).
+  const chatPath = scope === 'project'
+    ? '.dmux/chats/project.json'
+    : chatFilePath('global', null);  // absolute path for global
+
+  const { proposalId } = await runPlanner(
+    targetProjectPath,
+    targetProjectName,
+    prompt,
+    { source: 'chat', chatPath, chatScope: scope },
+  );
+
+  return { proposalId };
 }
 
 export const CHAT_LIMITS = { soft: SOFT_CAP_MESSAGES, hard: HARD_CAP_MESSAGES };

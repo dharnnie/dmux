@@ -178,7 +178,7 @@ const FILE_TREE_SKIP = new Set([
  * any failure — the route handler maps to HTTP status.
  */
 export async function runPlanner(projectPath, projectName, userPrompt, opts = {}) {
-  const { source = null, prdMarkdown = null } = opts;
+  const { source = null, prdMarkdown = null, chatPath = null, chatScope = null } = opts;
   if (typeof userPrompt !== 'string' || userPrompt.trim().length === 0) {
     throw new Error('Prompt is required.');
   }
@@ -228,6 +228,10 @@ export async function runPlanner(projectPath, projectName, userPrompt, opts = {}
   if (source === 'prd' && typeof prdMarkdown === 'string') {
     trigger.source = 'prd';
     trigger.prdPath = `.dmux/prds/${'placeholder'}.md`;  // overwritten below with the real id
+  } else if (source === 'chat' && chatPath) {
+    trigger.source = 'chat';
+    trigger.chatPath = chatPath;       // relative for project chats, absolute for global
+    trigger.chatScope = chatScope;     // 'project' | 'global'
   }
 
   const { id } = createProposalFromCore(projectPath, {
@@ -247,13 +251,11 @@ export async function runPlanner(projectPath, projectName, userPrompt, opts = {}
     rewriteTrigger(projectPath, id, finalTrigger);
   }
 
-  notify(
-    'proposal_ready',
-    'dmux: Proposal ready',
-    source === 'prd'
-      ? `From PRD on ${projectName} — review the planned team`
-      : `Planner finished on ${projectName} — review the planned team`,
-  );
+  const readySummary =
+    source === 'prd'  ? `From PRD on ${projectName} — review the planned team` :
+    source === 'chat' ? `From chat on ${projectName} — review the planned team` :
+    `Planner finished on ${projectName} — review the planned team`;
+  notify('proposal_ready', 'dmux: Proposal ready', readySummary);
 
   return { proposalId: id };
 }

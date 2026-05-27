@@ -50,6 +50,7 @@ import {
   runGlobalChatTurn,
   buildProjectChatGreeting,
   buildGlobalChatGreeting,
+  convertChatToProposal,
   CHAT_LIMITS,
 } from './lib/chat.js';
 
@@ -637,6 +638,47 @@ app.post('/api/chat/global/message', async (req, res) => {
   } catch (e) {
     const status = e?.status ?? 500;
     res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Convert chat → proposal endpoints. Project-scope uses the current project
+// as target; global-scope needs the user to pick.
+app.post('/api/chat/project/:name/convert', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = await convertChatToProposal('project', project.path, project.path, project.name);
+    res.json({ ok: true, projectName: project.name, ...result });
+  } catch (e) {
+    const status = e?.status ?? 500;
+    const msg = e?.message ?? String(e);
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post('/api/chat/global/convert', async (req, res) => {
+  try {
+    const targetProject = (req.body?.targetProject ?? '').toString().trim();
+    if (!targetProject) return res.status(400).json({ error: 'targetProject is required' });
+
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === targetProject);
+    if (!project) return res.status(404).json({ error: `Project '${targetProject}' not registered` });
+
+    const result = await convertChatToProposal('global', null, project.path, project.name);
+    res.json({ ok: true, projectName: project.name, ...result });
+  } catch (e) {
+    const status = e?.status ?? 500;
+    const msg = e?.message ?? String(e);
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(status).json({ error: msg });
   }
 });
 

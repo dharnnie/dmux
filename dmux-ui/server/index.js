@@ -46,9 +46,8 @@ import {
 } from './lib/dmux.js';
 import {
   readChat,
-  streamProjectChatTurn,
+  runProjectChatTurn,
   buildProjectChatGreeting,
-  hasAnthropicKey,
   CHAT_LIMITS,
 } from './lib/chat.js';
 
@@ -583,36 +582,29 @@ app.get('/api/chat/project/:name', (req, res) => {
       count: messages.length,
       nearLimit: messages.length >= CHAT_LIMITS.soft,
       atHardCap: messages.length >= CHAT_LIMITS.hard,
-      apiKeyConfigured: hasAnthropicKey(),
     });
   } catch (e) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 
-// Stream one chat turn as Server-Sent Events. Body: { message }. Response
-// is text/event-stream with `data: {type, ...}\n\n` frames — see
-// lib/chat.js streamProjectChatTurn for the event shapes.
+// One chat turn. Body: { message }. Shells `claude --print` and waits for
+// the full response, then returns it as JSON — same shape as Wave 2D's
+// per-proposal chat. Not streaming by design (Max subscription via
+// claude CLI is the auth path; no separate API key).
 app.post('/api/chat/project/:name/message', async (req, res) => {
   try {
     const projects = parseProjectsFile();
     const project = projects.find((p) => p.name === req.params.name);
-    if (!project) {
-      res.status(404).json({ error: 'Project not found' });
-      return;
-    }
+    if (!project) return res.status(404).json({ error: 'Project not found' });
 
     const message = (req.body?.message ?? '').toString();
     const runs = listRunsForProject(project.path);
-    await streamProjectChatTurn(project.path, project.name, message, runs, res);
+    const result = await runProjectChatTurn(project.path, project.name, message, runs);
+    res.json(result);
   } catch (e) {
-    // streamProjectChatTurn handles its own response state; this only
-    // catches pre-stream errors.
-    if (!res.headersSent) {
-      res.status(500).json({ error: e?.message ?? String(e) });
-    } else {
-      try { res.end(); } catch {}
-    }
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
   }
 });
 

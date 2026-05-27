@@ -1,20 +1,20 @@
 /**
  * Wave 3B chat — project-scoped (this slice) and dmux-global (Slice 2).
  *
- * This module is intentionally separate from lib/dmux.js because:
- *   - It uses the Anthropic SDK directly (not `claude --print`), and that
- *     dispatch shape doesn't belong with the rest of dmux's dmux.sh
- *     bridging.
- *   - It needs to stream SSE responses to the client; the rest of the
- *     server's handlers are JSON-shaped.
- *   - lib/dmux.js is already large.
+ * Uses `claude --print` so the user's Claude Code Max subscription is the
+ * single source of auth, same as Wave 2D's per-proposal chat, the NL
+ * planner, and discovery. No separate ANTHROPIC_API_KEY.
  *
- * Wave 2D's per-proposal chat stays in lib/dmux.js and continues to use
- * `claude --print` — two chat backends coexist by design (per wave-3b.md
- * §5.3).
+ * This module is intentionally separate from lib/dmux.js because lib/dmux.js
+ * has grown large and chat is a coherent surface of its own. The dispatch
+ * primitive (execClaude) is duplicated rather than shared so chat.js is
+ * self-contained.
+ *
+ * Wave 2D's per-proposal chat continues to live in lib/dmux.js — two chat
+ * surfaces, both on `--print`.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import { spawn } from 'child_process';
 import {
   readFileSync,
   writeFileSync,
@@ -27,36 +27,10 @@ import {
 import { homedir } from 'os';
 import { join, relative } from 'path';
 
-const CHAT_MODEL = 'claude-sonnet-4-5-20250929'; // SDK requires fully-qualified ids
-const CHAT_MAX_TOKENS = 4096;
+const CHAT_MODEL = 'sonnet';
+const CHAT_TIMEOUT_MS = 120_000;
 const SOFT_CAP_MESSAGES = 50;
 const HARD_CAP_MESSAGES = 100;
-
-let _anthropicClient = null;
-
-/**
- * Lazy-init the Anthropic SDK client. Throws an error with status=503 if
- * ANTHROPIC_API_KEY isn't set — chat is opt-in; the rest of dmux works
- * without it.
- */
-export function getAnthropicClient() {
-  if (_anthropicClient) return _anthropicClient;
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) {
-    const e = new Error(
-      'Chat requires ANTHROPIC_API_KEY. Set it in the shell that runs `dmux ui`.',
-    );
-    e.status = 503;
-    throw e;
-  }
-  _anthropicClient = new Anthropic({ apiKey: key });
-  return _anthropicClient;
-}
-
-/** Convenience: lets the UI render a friendly missing-key panel. */
-export function hasAnthropicKey() {
-  return Boolean(process.env.ANTHROPIC_API_KEY);
-}
 
 // ---------------------------------------------------------------------------
 // Chat storage
@@ -163,9 +137,8 @@ function safeRead(path, maxBytes = 30_000) {
 }
 
 /**
- * Project context envelope: file tree, CLAUDE.md, current .dmux-agents.yml,
- * recent run summaries. Assembled fresh each turn so changes to the project
- * since the chat started are reflected.
+ * Project context envelope. Assembled fresh each turn so changes to the
+ * project since the chat started are reflected.
  */
 export function buildProjectChatContext(projectPath, projectName, recentRuns = []) {
   return {
@@ -224,39 +197,78 @@ export function buildProjectChatGreeting(projectName) {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming chat turn
+// Shell `claude --print` with the prompt on stdin
+// ---------------------------------------------------------------------------
+
+function execClaude(stdinText) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('claude', ['--model', CHAT_MODEL, '--print'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, CHAT_TIMEOUT_MS);
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        const e = new Error('`claude` CLI not found on PATH. Chat requires Claude Code installed (https://claude.com/claude-code).');
+        e.status = 503;
+        reject(e);
+      } else {
+        reject(err);
+      }
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        const e = new Error(`Chat timed out after ${CHAT_TIMEOUT_MS / 1000}s.`);
+        e.status = 504;
+        return reject(e);
+      }
+      if (code !== 0) {
+        return reject(new Error(`claude exited ${code}: ${(stderr || stdout).slice(0, 500)}`));
+      }
+      resolve(stdout);
+    });
+
+    child.stdin.write(stdinText);
+    child.stdin.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// One chat turn (non-streaming)
 // ---------------------------------------------------------------------------
 
 /**
- * Drive one chat turn end-to-end: append the user message, open an SSE
- * response on `res`, stream Anthropic's response back as text-delta events,
- * persist the assistant's full message on stream end.
+ * Drive one chat turn end-to-end: validate, append the user message,
+ * assemble the conversation as a `claude --print` prompt, await the full
+ * response, persist the assistant message. Returns the assistant message
+ * for the route handler to JSON-respond with.
  *
- * SSE event shapes:
- *   data: {"type":"delta","text":"..."}\n\n
- *   data: {"type":"done","count":N}\n\n
- *   data: {"type":"error","message":"..."}\n\n
+ * Non-streaming by design (Claude Max subscription via `claude --print`
+ * is the auth path; the SDK would have given us streaming but at the cost
+ * of a second API key requirement — explicitly rejected, see wave-3b.md).
  */
-export async function streamProjectChatTurn(projectPath, projectName, userMessage, recentRuns, res) {
+export async function runProjectChatTurn(projectPath, projectName, userMessage, recentRuns) {
   if (typeof userMessage !== 'string' || userMessage.trim().length === 0) {
-    res.status(400).json({ error: 'message is required' });
-    return;
-  }
-
-  let client;
-  try {
-    client = getAnthropicClient();
-  } catch (e) {
-    res.status(e.status ?? 500).json({ error: e.message });
-    return;
+    const e = new Error('message is required');
+    e.status = 400;
+    throw e;
   }
 
   const existing = readChat('project', projectPath);
   if (existing.messages.length >= HARD_CAP_MESSAGES) {
-    res.status(429).json({
-      error: `Chat hard cap (${HARD_CAP_MESSAGES} messages) reached. Convert to a proposal or start a new chat.`,
-    });
-    return;
+    const e = new Error(`Chat hard cap (${HARD_CAP_MESSAGES} messages) reached. Convert to a proposal or start a new chat.`);
+    e.status = 429;
+    throw e;
   }
 
   const trimmedUser = userMessage.trim();
@@ -268,69 +280,44 @@ export async function streamProjectChatTurn(projectPath, projectName, userMessag
 
   const ctx = buildProjectChatContext(projectPath, projectName, recentRuns);
   const systemPrompt = buildSystemPrompt('project', ctx);
+  const greeting = buildProjectChatGreeting(projectName);
 
-  // Convert stored messages (now including the new user message) into the
-  // SDK's expected shape. We tolerate the legacy shape from Wave 2D-style
-  // messages (also {role, content}).
+  // Re-read so we include the just-appended user message.
   const stored = readChat('project', projectPath).messages;
-  const sdkMessages = stored.map((m) => ({
-    role: m.role === 'user' ? 'user' : 'assistant',
-    content: m.content,
-  }));
 
-  // Open SSE stream.
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  // Disable buffering for nginx proxies (no-op locally).
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
+  // Assemble the prompt: system + opener + full conversation transcript.
+  // The final user message is included via the transcript; we don't repeat
+  // it.
+  const sections = [
+    systemPrompt,
+    ``,
+    `Conversation so far:`,
+    `Assistant (opener): ${greeting}`,
+    ...stored.map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`),
+    ``,
+    `Respond to the user's latest message in plain prose. Markdown OK; no fenced YAML or proposal configs — that's the planner's job.`,
+  ];
+  const prompt = sections.join('\n');
 
-  const send = (obj) => {
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
-  };
-
-  let assistantText = '';
-  try {
-    const stream = client.messages.stream({
-      model: CHAT_MODEL,
-      max_tokens: CHAT_MAX_TOKENS,
-      system: [
-        // Wave 3B v1 caches just the system prompt. First-N-turns caching is
-        // a Wave 4 optimization.
-        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
-      ],
-      messages: sdkMessages,
-    });
-
-    stream.on('text', (text) => {
-      assistantText += text;
-      send({ type: 'delta', text });
-    });
-
-    await stream.finalMessage();
-  } catch (e) {
-    const msg = e?.message ?? String(e);
-    send({ type: 'error', message: msg });
-    res.end();
-    return;
+  const response = await execClaude(prompt);
+  const assistantContent = (response ?? '').trim();
+  if (!assistantContent) {
+    throw new Error('Assistant returned an empty response. Try rephrasing.');
   }
 
-  if (assistantText.length === 0) {
-    send({ type: 'error', message: 'Assistant returned an empty response. Try rephrasing.' });
-    res.end();
-    return;
-  }
-
-  appendChatMessage('project', projectPath, {
+  const assistantMessage = {
     role: 'assistant',
-    content: assistantText,
+    content: assistantContent,
     ts: new Date().toISOString(),
-  });
+  };
+  const all = appendChatMessage('project', projectPath, assistantMessage);
 
-  const count = stored.length + 1;
-  send({ type: 'done', count, nearLimit: count >= SOFT_CAP_MESSAGES });
-  res.end();
+  return {
+    message: assistantMessage,
+    count: all.length,
+    nearLimit: all.length >= SOFT_CAP_MESSAGES,
+    atHardCap: all.length >= HARD_CAP_MESSAGES,
+  };
 }
 
 export const CHAT_LIMITS = { soft: SOFT_CAP_MESSAGES, hard: HARD_CAP_MESSAGES };

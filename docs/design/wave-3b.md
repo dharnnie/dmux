@@ -6,6 +6,30 @@ Predecessor: `wave-3a.md`. Parent: `wave-3.md` (3B is the second of six sub-wave
 
 ---
 
+## AMENDMENT (mid-Slice-1)
+
+The original §1.2 / §5.1 / §5.2 mandated migrating chat to the Anthropic SDK
+for streaming + prompt caching, which would have required a separate
+`ANTHROPIC_API_KEY` alongside the user's Claude Code Max subscription.
+
+That was rejected mid-implementation: **the Max subscription is the only
+auth source dmux uses, and chat shouldn't be the exception.** Wave 3B stays
+on `claude --print` (same as Wave 2D's per-proposal chat and the planner /
+discovery callers). The trade-off:
+
+- ❌ No streaming. Chat shows a "thinking…" placeholder during the wait,
+  then renders the full assistant message at once.
+- ❌ No prompt caching. Every turn re-pays the full transcript at full
+  rate. On Max this is bundled, so the cost concern is theoretical for
+  this scale.
+- ✅ Single auth path. No second key.
+
+If long-running cost or UX pressure surfaces later, revisit. Until then,
+sections §1.2, §5.1, §5.2 below are SUPERSEDED — keep reading for context
+but the SDK isn't in scope.
+
+---
+
 ## Where Wave 3A left us
 
 Wave 3A landed PRD ingestion + notifications. The brainstorm-from-Claude-Desktop → markdown PRD → running team loop now works end-to-end without the user pasting a 2-page spec into a one-line NL prompt.

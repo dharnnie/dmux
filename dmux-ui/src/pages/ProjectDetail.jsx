@@ -141,6 +141,7 @@ export default function ProjectDetail() {
         agentCount={agentCount}
         onNewRun={handleNewRun}
         configHref={`/projects/${name}/agents`}
+        chatHref={`/projects/${name}/chat`}
       />
 
       <div className={styles.sections}>

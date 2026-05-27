@@ -44,6 +44,15 @@ import {
   readPrdArtifact,
   readRunViolationsSummaryWithNotify,
 } from './lib/dmux.js';
+import {
+  readChat,
+  runProjectChatTurn,
+  runGlobalChatTurn,
+  buildProjectChatGreeting,
+  buildGlobalChatGreeting,
+  convertChatToProposal,
+  CHAT_LIMITS,
+} from './lib/chat.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -556,6 +565,123 @@ app.get('/api/projects/:name/runs/:runId/violations-summary', (req, res) => {
 });
 
 // Full violations payload for one agent — used by the Violations tab on
+// ---------------------------------------------------------------------------
+// Wave 3B chat — project-scoped (Slice 1). Global comes in Slice 2.
+// ---------------------------------------------------------------------------
+
+// Read project chat history + a server-synthesized greeting. The greeting
+// isn't stored; it's regenerated each fetch so it always reflects the
+// current project name.
+app.get('/api/chat/project/:name', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const { messages } = readChat('project', project.path);
+    res.json({
+      greeting: buildProjectChatGreeting(project.name),
+      messages,
+      count: messages.length,
+      nearLimit: messages.length >= CHAT_LIMITS.soft,
+      atHardCap: messages.length >= CHAT_LIMITS.hard,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// One chat turn. Body: { message }. Shells `claude --print` and waits for
+// the full response, then returns it as JSON — same shape as Wave 2D's
+// per-proposal chat. Not streaming by design (Max subscription via
+// claude CLI is the auth path; no separate API key).
+app.post('/api/chat/project/:name/message', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const message = (req.body?.message ?? '').toString();
+    const runs = listRunsForProject(project.path);
+    const result = await runProjectChatTurn(project.path, project.name, message, runs);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// dmux-global chat. Single chat per installation; lives at
+// ~/.config/dmux/chats/global.json. Context envelope is the registered
+// project list — no file trees. For project-internal questions, the
+// project-scoped chat is the right surface.
+app.get('/api/chat/global', (req, res) => {
+  try {
+    const { messages } = readChat('global', null);
+    res.json({
+      greeting: buildGlobalChatGreeting(),
+      messages,
+      count: messages.length,
+      nearLimit: messages.length >= CHAT_LIMITS.soft,
+      atHardCap: messages.length >= CHAT_LIMITS.hard,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post('/api/chat/global/message', async (req, res) => {
+  try {
+    const message = (req.body?.message ?? '').toString();
+    const result = await runGlobalChatTurn(message);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Convert chat → proposal endpoints. Project-scope uses the current project
+// as target; global-scope needs the user to pick.
+app.post('/api/chat/project/:name/convert', async (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = await convertChatToProposal('project', project.path, project.path, project.name);
+    res.json({ ok: true, projectName: project.name, ...result });
+  } catch (e) {
+    const status = e?.status ?? 500;
+    const msg = e?.message ?? String(e);
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(status).json({ error: msg });
+  }
+});
+
+app.post('/api/chat/global/convert', async (req, res) => {
+  try {
+    const targetProject = (req.body?.targetProject ?? '').toString().trim();
+    if (!targetProject) return res.status(400).json({ error: 'targetProject is required' });
+
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === targetProject);
+    if (!project) return res.status(404).json({ error: `Project '${targetProject}' not registered` });
+
+    const result = await convertChatToProposal('global', null, project.path, project.name);
+    res.json({ ok: true, projectName: project.name, ...result });
+  } catch (e) {
+    const status = e?.status ?? 500;
+    const msg = e?.message ?? String(e);
+    if (/claude.*not found/i.test(msg)) return res.status(503).json({ error: msg });
+    if (/timed out/i.test(msg)) return res.status(504).json({ error: msg });
+    if (/validation|did not contain.*yaml/i.test(msg)) return res.status(422).json({ error: msg });
+    res.status(status).json({ error: msg });
+  }
+});
+
 // Agent Detail.
 app.get('/api/projects/:name/runs/:runId/agents/:agentName/violations', (req, res) => {
   try {

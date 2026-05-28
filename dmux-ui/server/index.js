@@ -54,6 +54,7 @@ import {
   CHAT_LIMITS,
 } from './lib/chat.js';
 import { getProviders } from './lib/providers.js';
+import { listMcpServers } from './lib/mcp.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -725,6 +726,20 @@ app.get('/api/skills', (req, res) => {
 // panel's provider picker and capability summary line.
 app.get('/api/providers', (req, res) => {
   res.json(getProviders());
+});
+
+// MCP server list for a project (Wave 3D Slice 1). Returns server names +
+// commands + credential references — never the resolved secret values.
+app.get('/api/projects/:name/mcp', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(listMcpServers(project.path));
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
 });
 
 app.post('/api/skills/:name/install', (req, res) => {

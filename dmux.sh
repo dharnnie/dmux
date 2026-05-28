@@ -1602,6 +1602,19 @@ agents_start() {
       agent_cmd+=" --model $agent_model"
     fi
 
+    # MCP config (Wave 3D Slice 1). When a project has .dmux/mcp.json and
+    # the agent is on claude, pass --mcp-config so the agent picks up the
+    # configured servers. We also prepend `eval "$(dmux _resolve-mcp-env)"`
+    # to the wait_cmd below (see notes below the loop) so the sentinel
+    # values resolve to real env exports before claude starts.
+    local mcp_config_path="${project_root}/.dmux/mcp.json"
+    local mcp_arg=""
+    local mcp_env_prefix=""
+    if [[ "$agent_provider" == "claude" && -f "$mcp_config_path" ]]; then
+      agent_cmd+=" --mcp-config $mcp_config_path"
+      mcp_env_prefix="eval \"\$('${dmux_bin}' _resolve-mcp-env '${project_root}')\" && "
+    fi
+
     # Build per-agent notification commands (empty when notifications disabled)
     local notify_ok="" notify_fail="" notify_blocked=""
     if [[ "$AGENTS_NOTIFICATIONS" == "true" ]]; then
@@ -1630,9 +1643,9 @@ agents_start() {
       done
       wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'${notify_blocked}${summary_cmd}; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
+        wait_cmd+="${mcp_env_prefix}${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
       else
-        wait_cmd+="${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
+        wait_cmd+="${mcp_env_prefix}${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
       fi
       wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
@@ -1640,9 +1653,9 @@ agents_start() {
       # Independent agent: launch immediately with marker file on exit
       echo "  $name: ${agent_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${mcp_env_prefix}${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
       else
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${mcp_env_prefix}${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
       fi
     fi
   done
@@ -3054,6 +3067,65 @@ case "${1:-}" in
     # Usage: dmux _notify-permission <agent-name> <project-name>
     send_notification "dmux: Agent waiting" "$2 in $3 needs a permission Y/N" "agent_blocked_on_permission"
     exit 0
+    ;;
+  _resolve-mcp-env)
+    # Internal subcommand (Wave 3D Slice 1): read .dmux/mcp.json, resolve
+    # every `env:VAR` / `keychain:...` sentinel in each server's env block
+    # to a real value, and print shell-evalable `export KEY=VALUE` lines.
+    #
+    # Usage: dmux _resolve-mcp-env <project-root>
+    # Exit codes:
+    #   0 — success; lines printed to stdout
+    #   1 — config malformed, sentinel unresolvable, or referenced secret missing
+    #   2 — usage error
+    #
+    # Slice 1 supports `env:VAR` only. `keychain:...` resolution lands in
+    # Slice 3; until then it errors with a clear message.
+    if [[ -z "${2:-}" ]]; then
+      echo "Usage: dmux _resolve-mcp-env <project-root>" >&2
+      exit 2
+    fi
+    require_command "python3" "parsing .dmux/mcp.json" || exit 1
+    PROJECT_ROOT="$2" python3 << 'PYEOF'
+import json, os, shlex, sys
+
+root = os.environ["PROJECT_ROOT"]
+path = os.path.join(root, ".dmux", "mcp.json")
+if not os.path.exists(path):
+    sys.exit(0)
+
+try:
+    config = json.load(open(path))
+except Exception as e:
+    print(f"# .dmux/mcp.json malformed: {e}", file=sys.stderr)
+    sys.exit(1)
+
+servers = config.get("mcpServers") or {}
+if not isinstance(servers, dict):
+    print("# mcpServers must be an object", file=sys.stderr)
+    sys.exit(1)
+
+for name, server in servers.items():
+    env = (server or {}).get("env") or {}
+    for key, value in env.items():
+        if not isinstance(value, str):
+            print(f"# {name}.env.{key} is not a string", file=sys.stderr)
+            sys.exit(1)
+        if value.startswith("env:"):
+            var_name = value[4:]
+            literal = os.environ.get(var_name)
+            if literal is None or literal == "":
+                print(f"# MCP secret env var '{var_name}' not set in shell (referenced by {name}.{key})", file=sys.stderr)
+                sys.exit(1)
+            print(f"export {key}={shlex.quote(literal)}")
+        elif value.startswith("keychain:"):
+            print(f"# keychain: sentinels resolve in Wave 3D Slice 3 — not yet supported (server={name}, key={key})", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"# {name}.env.{key} is not a sentinel (got {value!r})", file=sys.stderr)
+            sys.exit(1)
+PYEOF
+    exit $?
     ;;
   _notify-summary)
     # Internal subcommand: if all agents are done, send a summary notification

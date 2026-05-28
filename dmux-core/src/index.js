@@ -31,3 +31,11 @@ export {
   applyInputs,
   SkillSchemaError,
 } from './skills.js';
+
+export {
+  parseMcpConfig,
+  extractSecretRefs,
+  McpConfigError,
+  MCP_SECRET_PREFIX_KEYCHAIN,
+  MCP_SECRET_PREFIX_ENV,
+} from './mcp.js';

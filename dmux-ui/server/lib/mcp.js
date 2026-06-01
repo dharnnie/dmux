@@ -10,7 +10,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import {
   parseMcpConfig,
   extractSecretRefs,
@@ -18,6 +18,13 @@ import {
   MCP_SECRET_PREFIX_ENV,
 } from '../../../dmux-core/src/mcp.js';
 import { getCatalogueEntry } from './mcp-catalogue.js';
+import {
+  secretsBackend,
+  keychainSentinel,
+  writeKeychainSecret,
+  deleteKeychainSecret,
+  parseKeychainSentinel,
+} from './keychain.js';
 
 const MCP_CONFIG_REL = '.dmux/mcp.json';
 
@@ -93,14 +100,17 @@ export function listMcpServers(projectPath) {
 /**
  * Add a server from the catalogue. Body shape:
  *   catalogueName — slug
- *   envValues     — { ENV_KEY: env_var_name }   (Slice 2: env-var indirection)
+ *   envValues     — { ENV_KEY: value }
+ *                    Wave 3D Slice 3: meaning depends on secretsBackend():
+ *                      keychain → value is the actual secret (written to Keychain)
+ *                      env      → value is the env var NAME (stored as sentinel)
  *   argValues     — { paramName: stringValue }  (positional installArgs)
  *
  * Validates everything up front, builds the server block, merges into the
  * existing config (or starts a fresh one), validates the merged config via
  * parseMcpConfig, persists. Throws .status on validation failures.
  */
-export function addMcpServer(projectPath, { catalogueName, envValues = {}, argValues = {} } = {}) {
+export function addMcpServer(projectPath, projectName, { catalogueName, envValues = {}, argValues = {} } = {}) {
   if (typeof catalogueName !== 'string' || !catalogueName) {
     throw badRequest('catalogueName is required');
   }
@@ -109,20 +119,28 @@ export function addMcpServer(projectPath, { catalogueName, envValues = {}, argVa
     throw badRequest(`Unknown catalogue entry: ${catalogueName}`);
   }
 
-  // Validate required credentials are present + non-empty.
+  const backend = secretsBackend();
+
+  // Validate required credentials are present + non-empty. The shape of
+  // the validation depends on the backend (env-var-name vs raw secret).
   for (const cred of entry.requiredCredentials) {
     const v = envValues[cred.envKey];
     if (typeof v !== 'string' || v.trim() === '') {
-      throw badRequest(`Missing env var name for ${cred.envKey}`);
+      throw badRequest(`Missing value for ${cred.envKey}`);
     }
-    // Refuse anything that doesn't look like a conventional ALL_CAPS env
-    // var name. Catches "pasted my token by mistake" — lowercase letters
-    // in the value would normally be valid identifiers but break the
-    // shell-env-name convention (and GitHub/OpenAI tokens are mixed case).
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(v.trim())) {
-      throw badRequest(
-        `'${v}' isn't a valid env-var name for ${cred.envKey}. Paste the NAME of an env var you'll set in your shell (ALL_CAPS, e.g. GITHUB_TOKEN), not the token itself.`,
-      );
+    if (backend === 'env') {
+      // Refuse anything that doesn't look like a conventional ALL_CAPS env
+      // var name. Catches "pasted my token by mistake" — lowercase letters
+      // in the value would normally be valid identifiers but break the
+      // shell-env-name convention (and GitHub/OpenAI tokens are mixed case).
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(v.trim())) {
+        throw badRequest(
+          `'${v}' isn't a valid env-var name for ${cred.envKey}. Paste the NAME of an env var you'll set in your shell (ALL_CAPS, e.g. GITHUB_TOKEN), not the token itself.`,
+        );
+      }
+    } else {
+      // keychain: any non-empty string is fine; we'll write it verbatim to
+      // the Keychain. No length / charset checks — secrets can be anything.
     }
   }
 
@@ -136,10 +154,17 @@ export function addMcpServer(projectPath, { catalogueName, envValues = {}, argVa
     filledArgs.push(v.trim());
   }
 
-  // Build the server config block.
+  // Build the env block: write secrets to keychain (when applicable) and
+  // store sentinels — never raw values.
   const env = {};
   for (const cred of entry.requiredCredentials) {
-    env[cred.envKey] = `${MCP_SECRET_PREFIX_ENV}${envValues[cred.envKey].trim()}`;
+    const value = envValues[cred.envKey].trim();
+    if (backend === 'keychain') {
+      writeKeychainSecret(projectName, catalogueName, cred.envKey, value);
+      env[cred.envKey] = keychainSentinel(projectName, catalogueName, cred.envKey);
+    } else {
+      env[cred.envKey] = `${MCP_SECRET_PREFIX_ENV}${value}`;
+    }
   }
   const serverBlock = {
     command: entry.installCommand,
@@ -169,9 +194,9 @@ export function addMcpServer(projectPath, { catalogueName, envValues = {}, argVa
 }
 
 /**
- * Remove a server by name. Slice 3 also cleans up keychain entries for any
- * keychain: sentinels — v1's env: sentinels don't need cleanup since the
- * value lives only in the user's shell env.
+ * Remove a server by name. Cleans up any keychain entries the server's env
+ * block references. env: sentinels need no cleanup (the value lives only
+ * in the user's shell).
  */
 export function removeMcpServer(projectPath, serverName) {
   let config;
@@ -185,6 +210,15 @@ export function removeMcpServer(projectPath, serverName) {
   }
   if (!config || !config.mcpServers || !(serverName in config.mcpServers)) {
     throw notFound(`Server '${serverName}' is not configured`);
+  }
+
+  // Clean up keychain entries for this server before mutating the config.
+  // Errors from deleteKeychainSecret are non-fatal — config removal wins.
+  const departingServer = config.mcpServers[serverName];
+  for (const value of Object.values(departingServer.env ?? {})) {
+    if (typeof value === 'string' && value.startsWith('keychain:')) {
+      deleteKeychainSecret(value.slice('keychain:'.length));
+    }
   }
 
   const remaining = { ...config.mcpServers };
@@ -201,6 +235,8 @@ export function removeMcpServer(projectPath, serverName) {
   writeMcpConfig(projectPath, config);
   return listMcpServers(projectPath);
 }
+
+export { secretsBackend };
 
 function badRequest(msg) {
   const e = new Error(msg);

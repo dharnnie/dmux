@@ -54,7 +54,7 @@ import {
   CHAT_LIMITS,
 } from './lib/chat.js';
 import { getProviders } from './lib/providers.js';
-import { listMcpServers, addMcpServer, removeMcpServer } from './lib/mcp.js';
+import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
 import { getCatalogue } from './lib/mcp-catalogue.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -743,10 +743,15 @@ app.get('/api/projects/:name/mcp', (req, res) => {
   }
 });
 
-// MCP catalogue — static list of installable servers + their required
-// credentials / args. Read by the Add Server modal.
+// MCP catalogue + the detected secrets backend ('keychain' on macOS,
+// 'env' elsewhere). The UI uses the backend to switch the credential
+// input affordance between "paste the actual secret" and "paste the
+// env var name".
 app.get('/api/mcp/catalogue', (req, res) => {
-  res.json(getCatalogue());
+  res.json({
+    catalogue: getCatalogue(),
+    secretsBackend: secretsBackend(),
+  });
 });
 
 // Add a server from the catalogue. Body shape:
@@ -759,7 +764,7 @@ app.post('/api/projects/:name/mcp/servers', (req, res) => {
     const project = projects.find((p) => p.name === req.params.name);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const result = addMcpServer(project.path, req.body ?? {});
+    const result = addMcpServer(project.path, project.name, req.body ?? {});
     res.json(result);
   } catch (e) {
     const status = e?.status ?? 500;

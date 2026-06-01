@@ -54,7 +54,8 @@ import {
   CHAT_LIMITS,
 } from './lib/chat.js';
 import { getProviders } from './lib/providers.js';
-import { listMcpServers } from './lib/mcp.js';
+import { listMcpServers, addMcpServer, removeMcpServer } from './lib/mcp.js';
+import { getCatalogue } from './lib/mcp-catalogue.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -739,6 +740,46 @@ app.get('/api/projects/:name/mcp', (req, res) => {
     res.json(listMcpServers(project.path));
   } catch (e) {
     res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// MCP catalogue — static list of installable servers + their required
+// credentials / args. Read by the Add Server modal.
+app.get('/api/mcp/catalogue', (req, res) => {
+  res.json(getCatalogue());
+});
+
+// Add a server from the catalogue. Body shape:
+//   { catalogueName, envValues: {ENV_KEY: env_var_name}, argValues: {param: val} }
+// Slice 2 uses env-var indirection (envValues are env var NAMES, not the
+// secrets themselves). Slice 3 swaps in keychain for macOS.
+app.post('/api/projects/:name/mcp/servers', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = addMcpServer(project.path, req.body ?? {});
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Remove a server by name. Cleans up the config file entirely if no servers
+// remain — keeps dmux.sh's --mcp-config gate clean.
+app.delete('/api/projects/:name/mcp/servers/:serverName', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = removeMcpServer(project.path, req.params.serverName);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
   }
 });
 

@@ -1449,6 +1449,27 @@ agents_start() {
 
   local count=${#AGENTS_NAMES[@]}
 
+  # MCP pre-flight (Wave 3D Slice 3). If the project has .dmux/mcp.json and
+  # any agent is on claude, resolve every sentinel now — surfaces a missing
+  # keychain entry / missing env var BEFORE we spin up tmux or worktrees,
+  # not as a confusing "agent crashed on startup".
+  if [[ -f "${project_root}/.dmux/mcp.json" ]]; then
+    local has_claude=false
+    for ((_pi=0; _pi<count; _pi++)); do
+      if [[ "${AGENTS_PROVIDERS[$_pi]}" == "claude" ]]; then
+        has_claude=true
+        break
+      fi
+    done
+    if $has_claude; then
+      if ! "$0" _resolve-mcp-env "$project_root" > /dev/null; then
+        echo "" >&2
+        echo "MCP pre-flight failed. Fix the missing secret(s) via 'dmux ui' or update the env in your shell, then retry." >&2
+        return 1
+      fi
+    fi
+  fi
+
   # Create worktrees
   echo "Setting up worktrees..."
   create_worktrees "$project_root" || exit 1
@@ -3087,7 +3108,7 @@ case "${1:-}" in
     fi
     require_command "python3" "parsing .dmux/mcp.json" || exit 1
     PROJECT_ROOT="$2" python3 << 'PYEOF'
-import json, os, shlex, sys
+import json, os, shlex, subprocess, sys
 
 root = os.environ["PROJECT_ROOT"]
 path = os.path.join(root, ".dmux", "mcp.json")
@@ -3105,6 +3126,26 @@ if not isinstance(servers, dict):
     print("# mcpServers must be an object", file=sys.stderr)
     sys.exit(1)
 
+def resolve_keychain(spec, server_name, env_key):
+    """spec is the part after 'keychain:' — e.g. 'dmux-mcp/myproj:srv:KEY'."""
+    if "/" not in spec:
+        print(f"# malformed keychain sentinel for {server_name}.{env_key}: {spec!r}", file=sys.stderr)
+        return None
+    service, account = spec.split("/", 1)
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            capture_output=True, text=True, check=True,
+        )
+        return result.stdout.rstrip("\n")
+    except FileNotFoundError:
+        print(f"# `security` CLI not found — keychain sentinels need macOS (server={server_name}, key={env_key})", file=sys.stderr)
+        return None
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        print(f"# keychain lookup failed for {service}/{account}: {stderr or e.returncode} (server={server_name}, key={env_key})", file=sys.stderr)
+        return None
+
 for name, server in servers.items():
     env = (server or {}).get("env") or {}
     for key, value in env.items():
@@ -3119,8 +3160,10 @@ for name, server in servers.items():
                 sys.exit(1)
             print(f"export {key}={shlex.quote(literal)}")
         elif value.startswith("keychain:"):
-            print(f"# keychain: sentinels resolve in Wave 3D Slice 3 — not yet supported (server={name}, key={key})", file=sys.stderr)
-            sys.exit(1)
+            literal = resolve_keychain(value[9:], name, key)
+            if literal is None:
+                sys.exit(1)
+            print(f"export {key}={shlex.quote(literal)}")
         else:
             print(f"# {name}.env.{key} is not a sentinel (got {value!r})", file=sys.stderr)
             sys.exit(1)

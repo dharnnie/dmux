@@ -21,7 +21,7 @@ import styles from './AddMcpServerModal.module.css';
  */
 export default function AddMcpServerModal({ open, onClose, projectName, onAdded }) {
   const toast = useToast();
-  const { catalogue, ready } = useMcpCatalogue();
+  const { catalogue, secretsBackend, ready } = useMcpCatalogue();
   const [selectedName, setSelectedName] = useState(null);
   const [envValues, setEnvValues] = useState({});
   const [argValues, setArgValues] = useState({});
@@ -98,6 +98,7 @@ export default function AddMcpServerModal({ open, onClose, projectName, onAdded 
           argValues={argValues}
           setArgValues={setArgValues}
           error={error}
+          secretsBackend={secretsBackend}
         />
       ) : (
         <PickStep catalogue={catalogue} onPick={setSelectedName} />
@@ -133,7 +134,8 @@ function PickStep({ catalogue, onPick }) {
   );
 }
 
-function ConfigureStep({ entry, envValues, setEnvValues, argValues, setArgValues, error }) {
+function ConfigureStep({ entry, envValues, setEnvValues, argValues, setArgValues, error, secretsBackend }) {
+  const isKeychain = secretsBackend === 'keychain';
   return (
     <div className={styles.configureStep}>
       <p className={styles.configureDesc}>{entry.description}</p>
@@ -142,10 +144,15 @@ function ConfigureStep({ entry, envValues, setEnvValues, argValues, setArgValues
         <Input
           key={cred.envKey}
           label={cred.envKey}
+          type={isKeychain ? 'password' : 'text'}
           value={envValues[cred.envKey] ?? ''}
           onChange={(e) => setEnvValues((prev) => ({ ...prev, [cred.envKey]: e.target.value }))}
-          placeholder={`e.g. ${cred.envKey}`}
-          helperText={cred.helpText + (cred.helpUrl ? ` Get one at ${cred.helpUrl}.` : '')}
+          placeholder={isKeychain ? '••••••••' : `e.g. ${cred.envKey}`}
+          helperText={
+            isKeychain
+              ? `${cred.helpText} Stored in macOS Keychain (dmux-mcp).${cred.helpUrl ? ` Get one at ${cred.helpUrl}.` : ''}`
+              : `${cred.helpText}${cred.helpUrl ? ` Get one at ${cred.helpUrl}.` : ''}`
+          }
         />
       ))}
 
@@ -159,9 +166,20 @@ function ConfigureStep({ entry, envValues, setEnvValues, argValues, setArgValues
         />
       ))}
 
-      <div className={styles.platformHint}>
-        <strong>Env-var indirection (Wave 3D Slice 2).</strong> Paste the NAME of an env var you'll set in your shell, not the secret itself. Slice 3 swaps in macOS Keychain so you can paste the actual value securely.
-      </div>
+      {isKeychain ? (
+        <div className={styles.platformHint}>
+          <strong>Stored in macOS Keychain.</strong> The actual secret goes
+          into <code>dmux-mcp</code> on your Keychain; <code>.dmux/mcp.json</code>
+          only holds a reference. Agents read the secret at launch time.
+        </div>
+      ) : (
+        <div className={styles.platformHint}>
+          <strong>Env-var indirection.</strong> Paste the NAME of an env var
+          you'll set in your shell (e.g. <code>GITHUB_TOKEN</code>), not the
+          secret itself. dmux references it at agent launch; you manage the
+          value. macOS users get Keychain-backed storage automatically.
+        </div>
+      )}
 
       {error && <div className={styles.error}>{error}</div>}
     </div>

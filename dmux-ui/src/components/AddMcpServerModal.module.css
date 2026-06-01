@@ -1,0 +1,112 @@
+.spacer { flex: 1; }
+
+.loading {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: var(--space-4);
+  font-size: 14px;
+}
+
+.pickStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.pickHint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.pickList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pickCard {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.pickCard:hover {
+  border-color: var(--accent-cyan);
+}
+
+.pickTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.pickDesc {
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.pickMeta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.pickEscapeHatch {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.pickEscapeHatch code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-style: normal;
+}
+
+.configureStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.configureDesc {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.platformHint {
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--accent-cyan) 8%, var(--bg-input));
+  border-left: 3px solid var(--accent-cyan);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.error {
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--accent-red) 10%, var(--bg-input));
+  border-left: 3px solid var(--accent-red);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+}

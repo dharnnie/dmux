@@ -54,6 +54,8 @@ import {
   CHAT_LIMITS,
 } from './lib/chat.js';
 import { getProviders } from './lib/providers.js';
+import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
+import { getCatalogue } from './lib/mcp-catalogue.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -725,6 +727,65 @@ app.get('/api/skills', (req, res) => {
 // panel's provider picker and capability summary line.
 app.get('/api/providers', (req, res) => {
   res.json(getProviders());
+});
+
+// MCP server list for a project (Wave 3D Slice 1). Returns server names +
+// commands + credential references — never the resolved secret values.
+app.get('/api/projects/:name/mcp', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(listMcpServers(project.path));
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// MCP catalogue + the detected secrets backend ('keychain' on macOS,
+// 'env' elsewhere). The UI uses the backend to switch the credential
+// input affordance between "paste the actual secret" and "paste the
+// env var name".
+app.get('/api/mcp/catalogue', (req, res) => {
+  res.json({
+    catalogue: getCatalogue(),
+    secretsBackend: secretsBackend(),
+  });
+});
+
+// Add a server from the catalogue. Body shape:
+//   { catalogueName, envValues: {ENV_KEY: env_var_name}, argValues: {param: val} }
+// Slice 2 uses env-var indirection (envValues are env var NAMES, not the
+// secrets themselves). Slice 3 swaps in keychain for macOS.
+app.post('/api/projects/:name/mcp/servers', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = addMcpServer(project.path, project.name, req.body ?? {});
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Remove a server by name. Cleans up the config file entirely if no servers
+// remain — keeps dmux.sh's --mcp-config gate clean.
+app.delete('/api/projects/:name/mcp/servers/:serverName', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const result = removeMcpServer(project.path, req.params.serverName);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
+  }
 });
 
 app.post('/api/skills/:name/install', (req, res) => {

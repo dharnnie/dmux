@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import useAgentStatus from '../hooks/useAgentStatus';
 import GitPanel from '../components/GitPanel';
+import McpCard from '../components/McpCard';
 import ProjectSummaryHeader from '../components/ProjectSummaryHeader';
 import Card, { CardTitle } from '../components/Card';
 import Button from '../components/Button';
@@ -232,6 +233,8 @@ export default function ProjectDetail() {
             CLAUDE.md preview lands with the Wave 2C adopt-repo flow.
           </p>
         </Card>
+
+        <McpCard projectName={name} />
 
         <Disclosure title="Settings">
           <div className={styles.settingsBlock}>

@@ -135,6 +135,125 @@ provider_process_name() {
   esac
 }
 
+# Wave 3E Slice 1: role-aware task extensions. dmux owns the protocol for
+# handoff artifacts (plan.md, review.md); these short boilerplate strings
+# get prepended to each agent's task so the agent knows where to read/write.
+#
+# Path arg is the absolute project path. Returns the extension on stdout —
+# empty for roles dmux doesn't have special handling for.
+role_task_extension() {
+  local role="$1"
+  local project_root="$2"
+  local run_id="$3"
+  local rel_handoff_dir=".dmux/runs/${run_id}/handoffs"
+
+  case "$role" in
+    plan)
+      cat <<EOF
+[dmux protocol: plan-role agent]
+You are the planning agent for this run. Your job is to think through
+what needs to be done and write a structured plan that downstream
+build-role agents will follow as their source of truth.
+
+Write your plan to ${rel_handoff_dir}/plan.md (path is relative to the
+project root). Use this format:
+
+  # Plan: <one-line summary>
+
+  ## Goal
+  <one paragraph>
+
+  ## Tasks
+  <numbered list with rationale>
+
+  ## Acceptance criteria
+  <bulleted list of testable outcomes>
+
+  \`\`\`json
+  {
+    "summary": "<one line>",
+    "tasks": [
+      { "id": "1", "description": "<imperative phrase>", "files": ["<paths>"] }
+    ],
+    "acceptanceCriteria": ["<testable outcome>"]
+  }
+  \`\`\`
+
+The fenced \`\`\`json appendix at the END is the canonical structured form
+that downstream agents and dmux's UI parse. Keep the markdown for humans;
+keep the JSON precise.
+
+YOUR TASK FROM THE USER:
+EOF
+      ;;
+    build)
+      cat <<EOF
+[dmux protocol: build-role agent]
+Before starting, check if ${rel_handoff_dir}/plan.md exists. If it does,
+read it — the structured \`\`\`json appendix is your canonical source of
+truth for what to build. The markdown body has context and rationale.
+
+If the plan file is missing, fall back to the task description below and
+proceed without it.
+
+YOUR TASK FROM THE USER:
+EOF
+      ;;
+    review)
+      cat <<EOF
+[dmux protocol: review-role agent]
+You are the reviewer for this run. Read upstream agents' work and write
+a structured review to ${rel_handoff_dir}/review.md.
+
+Inputs:
+- ${rel_handoff_dir}/plan.md (if present) — what the team agreed to build.
+- The git diff of each build-role agent's worktree against the base
+  branch. Use git commands to inspect the work — your task description
+  below should tell you which branches/agents to review.
+
+Output format for ${rel_handoff_dir}/review.md:
+
+  # Review: <one-line summary>
+
+  ## Summary
+  <one paragraph: overall verdict + the most important takeaway>
+
+  ## Findings
+  <numbered list, one per finding, with severity + file:line + comment>
+
+  ## Verdict
+  <one of: approve, request_changes, block>
+
+  \`\`\`json
+  {
+    "verdict": "approve" | "request_changes" | "block",
+    "summary": "<one line>",
+    "findings": [
+      { "severity": "low" | "medium" | "high" | "critical",
+        "file": "<path>", "line": <int>, "comment": "<actionable>" }
+    ]
+  }
+  \`\`\`
+
+The fenced \`\`\`json appendix at the END is canonical — dmux's UI parses
+verdict + findings from it. Keep markdown for humans; keep JSON precise.
+
+Verdict semantics:
+- approve         — ship it
+- request_changes — the build is mostly right; address findings then re-run
+- block           — fundamental problem; the build shouldn't ship even
+                    with changes (e.g. security issue, wrong approach)
+
+YOUR TASK FROM THE USER:
+EOF
+      ;;
+    *)
+      # No extension for research / unknown roles.
+      echo ""
+      ;;
+  esac
+}
+
 # Get git username as a slug, fallback to whoami
 get_git_username_slug() {
   local username
@@ -1488,6 +1607,12 @@ agents_start() {
   echo "Run: $run_id"
   echo "Signal directory: $signal_dir"
 
+  # Wave 3E Slice 1: per-run handoffs directory. Plan-role agents write
+  # handoffs/plan.md; build-role agents read it; review-role agents
+  # eventually write handoffs/review.md (Slice 2).
+  local handoffs_dir="$abs_root/.dmux/runs/$run_id/handoffs"
+  mkdir -p "$handoffs_dir"
+
   # Save base branch for changelog generation
   git -C "$project_root" rev-parse --abbrev-ref HEAD > "$abs_root/.dmux/base_branch"
   echo "Base branch: $(cat "$abs_root/.dmux/base_branch")"
@@ -1604,6 +1729,17 @@ agents_start() {
 
     local full_prompt
     full_prompt=$(build_agent_prompt "${AGENTS_TASKS[$i]}" "${AGENTS_SCOPES[$i]}" "${AGENTS_CONTEXTS[$i]}" "${AGENTS_ROLES[$i]}" "$all_branches" "$agent_on_complete" "$plan_output_path" "$upstream_plans")
+
+    # Wave 3E Slice 1: prepend the role-aware protocol extension. dmux owns
+    # what plan-role agents emit and what build-role agents read. Empty for
+    # roles without a defined extension.
+    local role_ext
+    role_ext=$(role_task_extension "${AGENTS_ROLES[$i]}" "$abs_root" "$run_id")
+    if [[ -n "$role_ext" ]]; then
+      full_prompt="${role_ext}
+
+${full_prompt}"
+    fi
 
     # Escape single quotes for safe shell embedding (single-quoted strings
     # prevent $, `, \, and ! expansion that double quotes would allow)

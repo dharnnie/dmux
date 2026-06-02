@@ -39,3 +39,8 @@ export {
   MCP_SECRET_PREFIX_KEYCHAIN,
   MCP_SECRET_PREFIX_ENV,
 } from './mcp.js';
+
+export {
+  parsePlanArtifact,
+  parseReviewArtifact,
+} from './handoffs.js';

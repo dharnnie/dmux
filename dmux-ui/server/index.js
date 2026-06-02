@@ -56,6 +56,7 @@ import {
 import { getProviders } from './lib/providers.js';
 import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
 import { getCatalogue } from './lib/mcp-catalogue.js';
+import { readPlanArtifact, readReviewArtifact } from './lib/handoffs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -565,6 +566,25 @@ app.get('/api/projects/:name/runs/:runId/violations-summary', (req, res) => {
     res.json(readRunViolationsSummaryWithNotify(project.path, project.name, req.params.runId));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Wave 3E Slice 1: handoff artifacts for a run. Returns plan (Slice 1) +
+// review (null in Slice 1, populated in Slice 2). Null entry = no artifact
+// on disk; an object with structured=null + parseError means the file
+// exists but the JSON appendix didn't parse — UI still renders the markdown.
+app.get('/api/projects/:name/runs/:runId/handoffs', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json({
+      plan: readPlanArtifact(project.path, req.params.runId),
+      review: readReviewArtifact(project.path, req.params.runId),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
   }
 });
 

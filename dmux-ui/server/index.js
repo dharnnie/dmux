@@ -57,7 +57,7 @@ import { getProviders } from './lib/providers.js';
 import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
 import { getCatalogue } from './lib/mcp-catalogue.js';
 import { readPlanArtifact, readReviewArtifact } from './lib/handoffs.js';
-import { readRunTimeline } from './lib/timeline.js';
+import { readRunTimeline, getActivitySummary } from './lib/timeline.js';
 import { startHandoffWatcher } from './lib/handoff-watcher.js';
 import {
   getCatalogueForRead,
@@ -604,6 +604,17 @@ app.get('/api/projects/:name/runs/:runId/timeline', (req, res) => {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     res.json(readRunTimeline(project.path, req.params.runId));
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Wave 4A Slice 2: god-view aggregate. Returns active agents across all
+// projects with their latest timeline event, or a recently-completed fallback
+// when nothing's in flight.
+app.get('/api/activity', (req, res) => {
+  try {
+    res.json(getActivitySummary(parseProjectsFile()));
   } catch (e) {
     res.status(500).json({ error: e?.message ?? String(e) });
   }

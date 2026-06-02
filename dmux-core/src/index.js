@@ -42,4 +42,5 @@ export {
 
 export {
   parsePlanArtifact,
+  parseReviewArtifact,
 } from './handoffs.js';

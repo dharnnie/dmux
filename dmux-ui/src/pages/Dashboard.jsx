@@ -36,7 +36,7 @@ export default function Dashboard() {
     return (
       <div className={styles.page}>
         <header className={styles.header}>
-          <h1 className={styles.title}>Activity</h1>
+          <h1 className={styles.title}>Dashboard</h1>
         </header>
         <p className={styles.loading}>Loading runs…</p>
       </div>

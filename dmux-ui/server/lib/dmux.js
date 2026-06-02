@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { join, relative } from 'path';
 import { WebSocketServer } from 'ws';
 import yaml from 'js-yaml';
+import { appendTimelineEvent } from './timeline.js';
 import { loadAgentsConfig as loadAgentsConfigParsedFromCore, ConfigError } from '../../../dmux-core/src/config.js';
 import {
   listRuns as listRunsFromCore,
@@ -256,6 +257,11 @@ export async function runPlanner(projectPath, projectName, userPrompt, opts = {}
     source === 'chat' ? `From chat on ${projectName} — review the planned team` :
     `Planner finished on ${projectName} — review the planned team`;
   notify('proposal_ready', 'dmux: Proposal ready', readySummary);
+  appendTimelineEvent(projectPath, id, {
+    type: 'proposal_ready',
+    summary: readySummary,
+    data: { source, agentCount: agentsSummary.length },
+  });
 
   return { proposalId: id };
 }
@@ -549,6 +555,15 @@ export async function runAdoption(rawPath, providedName, correlationId = null) {
       'dmux: Proposal ready',
       `Adopted ${name} — review the starter team`,
     );
+    appendTimelineEvent(path, proposalId, {
+      type: 'proposal_ready',
+      summary: `Adopted ${name} — review the starter team`,
+      data: {
+        source: 'adopt',
+        agentCount: agentsSummary.length,
+        recommendedSkillsCount: recommendedSkills?.length ?? 0,
+      },
+    });
 
     return {
       projectName: name,
@@ -1079,6 +1094,11 @@ export async function regenerateProposalFromChat(projectPath, projectName, propo
     'dmux: Proposal updated',
     `Regenerated from chat on ${projectName} — review the new team`,
   );
+  appendTimelineEvent(projectPath, proposalId, {
+    type: 'proposal_ready',
+    summary: `Regenerated from chat on ${projectName} — review the new team`,
+    data: { source: 'chat_regenerate', agentCount: agentsSummary.length },
+  });
 
   return { ok: true, proposalId };
 }
@@ -1981,11 +2001,14 @@ export function readRunViolationsSummaryWithNotify(projectPath, projectName, run
     const key = violationKey(projectName, runId, agentName);
     const prev = lastViolationCounts.get(key) ?? 0;
     if (count > prev) {
-      notify(
-        'scope_violation',
-        'dmux: Scope violation',
-        `${agentName} in ${projectName} wrote outside its scope (${count} file${count === 1 ? '' : 's'})`,
-      );
+      const message = `${agentName} in ${projectName} wrote outside its scope (${count} file${count === 1 ? '' : 's'})`;
+      notify('scope_violation', 'dmux: Scope violation', message);
+      appendTimelineEvent(projectPath, runId, {
+        type: 'scope_violation',
+        agent: agentName,
+        summary: `Scope violation — ${count} file${count === 1 ? '' : 's'} outside scope`,
+        data: { count, previousCount: prev },
+      });
     }
     lastViolationCounts.set(key, count);
   }

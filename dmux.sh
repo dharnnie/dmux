@@ -2363,7 +2363,7 @@ skills_install() {
     return 0
   fi
 
-  # Find source — built-in skills directory
+  # Find source — built-in skills directory first.
   local builtin_dir
   builtin_dir=$(get_builtin_skills_dir)
   local source=""
@@ -2372,20 +2372,111 @@ skills_install() {
     source="$builtin_dir/$name"
   fi
 
-  if [[ -z "$source" ]]; then
-    echo "Error: Skill '$name' not found."
-    echo ""
-    echo "Available skills:"
-    skills_list
-    return 1
+  if [[ -n "$source" ]]; then
+    # Install from built-ins
+    mkdir -p "$SKILLS_DIR"
+    cp -r "$source" "$SKILLS_DIR/$name"
+    parse_skill_yaml "$SKILLS_DIR/$name/skill.yml"
+    echo "Installed skill: $SKILL_NAME"
+    echo "  $SKILL_DESCRIPTION"
+    return 0
   fi
 
-  # Install
-  mkdir -p "$SKILLS_DIR"
-  cp -r "$source" "$SKILLS_DIR/$name"
-  parse_skill_yaml "$SKILLS_DIR/$name/skill.yml"
-  echo "Installed skill: $SKILL_NAME"
-  echo "  $SKILL_DESCRIPTION"
+  # Wave 3F: fall through to the remote catalogue. Requires the dmux UI
+  # server to be running; the install endpoint does the fetch + validate.
+  local server_url="${DMUX_UI_URL:-http://localhost:3100}"
+  if curl -sf --max-time 2 "$server_url/api/projects" >/dev/null 2>&1; then
+    echo "Skill '$name' is not a built-in. Trying the remote catalogue…"
+    local resp_file code_file
+    resp_file="$(mktemp)"; code_file="$(mktemp)"
+    curl -s -o "$resp_file" -w "%{http_code}" --max-time 30 \
+      -X POST -H "Content-Type: application/json" \
+      -d "{\"name\":\"${name}\"}" \
+      "$server_url/api/skills/install-from-catalogue" > "$code_file"
+    local code; code=$(cat "$code_file")
+    local resp; resp=$(cat "$resp_file")
+    rm -f "$resp_file" "$code_file"
+    if [[ "$code" == "200" ]]; then
+      local installed_name; installed_name=$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('name','?'))" 2>/dev/null)
+      echo "Installed skill from catalogue: $installed_name"
+      return 0
+    else
+      local err; err=$(printf '%s' "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin).get('error','unknown error'))" 2>/dev/null)
+      echo "Error from catalogue (HTTP $code): $err" >&2
+      return 1
+    fi
+  fi
+
+  echo "Error: Skill '$name' not found in built-ins and dmux UI server not running (so the remote catalogue is unreachable)." >&2
+  echo "  Start the server with 'dmux ui' and retry, or use 'dmux skills list' to see what's available locally." >&2
+  return 1
+}
+
+# Wave 3F: print the remote catalogue. Requires the dmux UI server.
+skills_list_remote() {
+  require_command "curl" "fetching the skill catalogue" || return 1
+  require_command "python3" "parsing the catalogue response" || return 1
+  local server_url="${DMUX_UI_URL:-http://localhost:3100}"
+  if ! curl -sf --max-time 2 "$server_url/api/projects" >/dev/null 2>&1; then
+    echo "Error: dmux UI server not reachable at $server_url. Start it with 'dmux ui'." >&2
+    return 1
+  fi
+  local resp; resp=$(curl -sf --max-time 30 "$server_url/api/skills/catalogue")
+  if [[ -z "$resp" ]]; then
+    echo "Error: empty response from $server_url/api/skills/catalogue" >&2
+    return 1
+  fi
+  echo "Remote skill catalogue"
+  echo ""
+  CATALOGUE_JSON="$resp" SKILLS_DIR_ARG="$SKILLS_DIR" python3 <<'PYEOF'
+import json, os, sys
+data = json.loads(os.environ["CATALOGUE_JSON"])
+skills_dir = os.environ["SKILLS_DIR_ARG"]
+warning = data.get("warning")
+fetched = data.get("fetchedAt") or "(never)"
+url = data.get("url") or "(unknown)"
+print(f"  Source: {url}")
+print(f"  Last refreshed: {fetched}")
+if warning:
+    print(f"  WARNING: {warning}")
+print()
+skills = (data.get("catalogue") or {}).get("skills") or []
+if not skills:
+    print("  No skills in catalogue.")
+    sys.exit(0)
+for s in skills:
+    installed = os.path.isdir(os.path.join(skills_dir, s["name"]))
+    state = "(installed)" if installed else "(available)"
+    tags = ", ".join(s.get("tags") or [])
+    author = s.get("author") or "—"
+    print(f"  {s['name']:<25} by {author:<15}  {state}")
+    print(f"    {s.get('description', '')}")
+    if tags:
+        print(f"    tags: {tags}")
+    print()
+PYEOF
+}
+
+# Wave 3F: force-refresh the catalogue cache.
+skills_refresh() {
+  require_command "curl" "refreshing the skill catalogue" || return 1
+  local server_url="${DMUX_UI_URL:-http://localhost:3100}"
+  if ! curl -sf --max-time 2 "$server_url/api/projects" >/dev/null 2>&1; then
+    echo "Error: dmux UI server not reachable at $server_url. Start it with 'dmux ui'." >&2
+    return 1
+  fi
+  local code; code=$(curl -s -o /tmp/dmux-refresh.json -w "%{http_code}" --max-time 30 \
+    -X POST "$server_url/api/skills/refresh-catalogue")
+  if [[ "$code" == "200" ]]; then
+    local n; n=$(python3 -c "import json; d=json.load(open('/tmp/dmux-refresh.json')); print(len(d.get('catalogue',{}).get('skills') or []))" 2>/dev/null)
+    echo "Catalogue refreshed: $n skill(s)."
+    rm -f /tmp/dmux-refresh.json
+    return 0
+  fi
+  local err; err=$(python3 -c "import json; d=json.load(open('/tmp/dmux-refresh.json')); print(d.get('error','unknown'))" 2>/dev/null)
+  echo "Error refreshing catalogue (HTTP $code): $err" >&2
+  rm -f /tmp/dmux-refresh.json
+  return 1
 }
 
 skills_remove() {
@@ -2476,17 +2567,26 @@ skills_usage() {
 dmux skills — Reusable agent workflow templates
 
 USAGE:
-  dmux skills list                    List available and installed skills
-  dmux skills install <name>          Install a skill
+  dmux skills list                    List installed + built-in skills
+  dmux skills list --remote           Browse the remote catalogue
+  dmux skills install <name>          Install a skill (built-in or from catalogue)
   dmux skills remove <name>           Uninstall a skill
   dmux skills run <name> [project]    Generate agent config from skill and launch
+  dmux skills refresh                 Force-refetch the remote catalogue
   dmux skills help                    Show this help
+
+REMOTE CATALOGUE:
+  The catalogue URL defaults to github.com/dharnnie/dmux-skills. Override:
+    - DMUX_SKILL_CATALOGUE_URL=<url> dmux skills list --remote
+    - or write the URL to ~/.config/dmux/catalogue.url
+  Browsing + installing from the catalogue requires `dmux ui` to be running.
 
 EXAMPLES:
   dmux skills list
+  dmux skills list --remote
   dmux skills install security-audit
   dmux skills run security-audit myproject
-  dmux skills remove security-audit
+  dmux skills refresh
 EOF
 }
 
@@ -2495,10 +2595,19 @@ handle_skills_command() {
   shift 2>/dev/null || true
 
   case "$action" in
-    list)    skills_list ;;
+    list)
+      # `dmux skills list` shows local + built-in.
+      # `dmux skills list --remote` shows the remote catalogue.
+      if [[ "${1:-}" == "--remote" ]]; then
+        skills_list_remote
+      else
+        skills_list
+      fi
+      ;;
     install) skills_install "$@" ;;
     remove)  skills_remove "$@" ;;
     run)     skills_run "$@" ;;
+    refresh) skills_refresh ;;     # Wave 3F
     help)    skills_usage ;;
     *)
       echo "Error: Unknown skills action '$action'"

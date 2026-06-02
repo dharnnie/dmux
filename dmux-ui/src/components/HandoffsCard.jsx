@@ -30,13 +30,98 @@ export default function HandoffsCard({ projectName, runId }) {
   }, [projectName, runId]);
 
   if (!state) return null;
-  const { plan } = state;
-  if (!plan) return null;  // Slice 1: nothing to show when no plan exists
+  const { plan, review } = state;
+  if (!plan && !review) return null;  // hide the card when nothing to show
 
   return (
     <Card header={<CardTitle>Handoffs</CardTitle>}>
-      <PlanDisclosure plan={plan} />
+      {plan && <PlanDisclosure plan={plan} />}
+      {review && <ReviewDisclosure review={review} />}
     </Card>
+  );
+}
+
+const VERDICT_TONE = {
+  approve: 'green',
+  request_changes: 'orange',
+  block: 'red',
+};
+
+const SEVERITY_TONE = {
+  low: 'muted',
+  medium: 'orange',
+  high: 'red',
+  critical: 'red',
+};
+
+function ReviewDisclosure({ review }) {
+  const verdict = review.structured?.verdict ?? null;
+  const findingCount = review.structured?.findings?.length ?? 0;
+  const title = (
+    <span>
+      <span className={styles.icon}>⚖️</span> Review
+      {verdict && (
+        <span className={styles.verdictChip} data-tone={VERDICT_TONE[verdict] || 'muted'}>
+          {verdict.replace('_', ' ')}
+        </span>
+      )}
+      {findingCount > 0 && (
+        <span className={styles.titleCount}> · {findingCount} finding{findingCount === 1 ? '' : 's'}</span>
+      )}
+    </span>
+  );
+
+  return (
+    <Disclosure title={title}>
+      <div className={styles.body}>
+        {review.parseError && (
+          <div className={styles.warning}>
+            <strong>Structured view unavailable.</strong> {review.parseError}. The
+            markdown body below is still rendered as the agent wrote it.
+          </div>
+        )}
+
+        <div className={styles.markdown}>
+          <ReactMarkdown>{review.markdown || '(empty review file)'}</ReactMarkdown>
+        </div>
+
+        {review.structured && review.structured.findings.length > 0 && (
+          <ReviewFindings findings={review.structured.findings} />
+        )}
+      </div>
+    </Disclosure>
+  );
+}
+
+function ReviewFindings({ findings }) {
+  return (
+    <div className={styles.structured}>
+      <h4 className={styles.structuredHeader}>Findings</h4>
+      <table className={styles.findingsTable}>
+        <thead>
+          <tr>
+            <th>Severity</th>
+            <th>Location</th>
+            <th>Comment</th>
+          </tr>
+        </thead>
+        <tbody>
+          {findings.map((f, i) => (
+            <tr key={i}>
+              <td>
+                <span className={styles.severityChip} data-tone={SEVERITY_TONE[f.severity] || 'muted'}>
+                  {f.severity}
+                </span>
+              </td>
+              <td className={styles.findingLoc}>
+                <code>{f.file}{f.line != null ? `:${f.line}` : ''}</code>
+              </td>
+              <td>{f.comment}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

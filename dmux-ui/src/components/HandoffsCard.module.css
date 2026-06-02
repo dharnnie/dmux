@@ -123,3 +123,82 @@
 .acList li {
   margin-bottom: 4px;
 }
+
+/* Verdict chip + severity chip share the same look, different tones */
+.verdictChip,
+.severityChip {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.verdictChip[data-tone='green'],
+.severityChip[data-tone='green'] {
+  background: color-mix(in srgb, var(--accent-green) 15%, transparent);
+  color: var(--accent-green);
+}
+
+.verdictChip[data-tone='orange'],
+.severityChip[data-tone='orange'] {
+  background: color-mix(in srgb, var(--accent-orange) 15%, transparent);
+  color: var(--accent-orange);
+}
+
+.verdictChip[data-tone='red'],
+.severityChip[data-tone='red'] {
+  background: color-mix(in srgb, var(--accent-red) 15%, transparent);
+  color: var(--accent-red);
+}
+
+.verdictChip[data-tone='muted'],
+.severityChip[data-tone='muted'] {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+}
+
+.severityChip {
+  margin-left: 0;
+}
+
+/* Findings table */
+.findingsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.findingsTable th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  padding: 4px var(--space-2);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.findingsTable td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-primary);
+  vertical-align: top;
+  color: var(--text-primary);
+}
+
+.findingsTable tr:last-child td {
+  border-bottom: none;
+}
+
+.findingLoc code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}

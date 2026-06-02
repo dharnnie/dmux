@@ -44,3 +44,8 @@ export {
   parsePlanArtifact,
   parseReviewArtifact,
 } from './handoffs.js';
+
+export {
+  parseCatalogueManifest,
+  CatalogueError,
+} from './catalogue.js';

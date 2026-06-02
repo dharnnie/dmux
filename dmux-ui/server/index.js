@@ -57,6 +57,11 @@ import { getProviders } from './lib/providers.js';
 import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
 import { getCatalogue } from './lib/mcp-catalogue.js';
 import { readPlanArtifact, readReviewArtifact } from './lib/handoffs.js';
+import {
+  getCatalogueForRead,
+  fetchCatalogueFresh,
+  installSkillFromCatalogue,
+} from './lib/catalogue.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -814,6 +819,45 @@ app.post('/api/skills/:name/install', (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Wave 3F: skill catalogue endpoints. The UI reads the catalogue, refreshes
+// on user click, and installs by name.
+
+app.get('/api/skills/catalogue', async (req, res) => {
+  try {
+    // Serve cache; auto-stale refresh kicks off inside getCatalogueForRead.
+    const result = await getCatalogueForRead();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+app.post('/api/skills/refresh-catalogue', async (req, res) => {
+  try {
+    const result = await fetchCatalogueFresh();
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    // Surface cached copy + warning on network failure so the UI can keep
+    // rendering the stale list rather than going blank.
+    res.status(status).json({
+      error: e?.message ?? String(e),
+      cached: e?.cached ?? null,
+    });
+  }
+});
+
+app.post('/api/skills/install-from-catalogue', async (req, res) => {
+  try {
+    const name = (req.body?.name ?? '').toString();
+    const result = await installSkillFromCatalogue(name);
+    res.json(result);
+  } catch (e) {
+    const status = e?.status ?? 500;
+    res.status(status).json({ error: e?.message ?? String(e) });
   }
 });
 

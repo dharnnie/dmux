@@ -199,8 +199,56 @@ proceed without it.
 YOUR TASK FROM THE USER:
 EOF
       ;;
+    review)
+      cat <<EOF
+[dmux protocol: review-role agent]
+You are the reviewer for this run. Read upstream agents' work and write
+a structured review to ${rel_handoff_dir}/review.md.
+
+Inputs:
+- ${rel_handoff_dir}/plan.md (if present) — what the team agreed to build.
+- The git diff of each build-role agent's worktree against the base
+  branch. Use git commands to inspect the work — your task description
+  below should tell you which branches/agents to review.
+
+Output format for ${rel_handoff_dir}/review.md:
+
+  # Review: <one-line summary>
+
+  ## Summary
+  <one paragraph: overall verdict + the most important takeaway>
+
+  ## Findings
+  <numbered list, one per finding, with severity + file:line + comment>
+
+  ## Verdict
+  <one of: approve, request_changes, block>
+
+  \`\`\`json
+  {
+    "verdict": "approve" | "request_changes" | "block",
+    "summary": "<one line>",
+    "findings": [
+      { "severity": "low" | "medium" | "high" | "critical",
+        "file": "<path>", "line": <int>, "comment": "<actionable>" }
+    ]
+  }
+  \`\`\`
+
+The fenced \`\`\`json appendix at the END is canonical — dmux's UI parses
+verdict + findings from it. Keep markdown for humans; keep JSON precise.
+
+Verdict semantics:
+- approve         — ship it
+- request_changes — the build is mostly right; address findings then re-run
+- block           — fundamental problem; the build shouldn't ship even
+                    with changes (e.g. security issue, wrong approach)
+
+YOUR TASK FROM THE USER:
+EOF
+      ;;
     *)
-      # No extension for research / unknown / review (Slice 2 adds review).
+      # No extension for research / unknown roles.
       echo ""
       ;;
   esac

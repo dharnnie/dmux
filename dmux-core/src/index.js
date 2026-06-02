@@ -49,3 +49,9 @@ export {
   parseCatalogueManifest,
   CatalogueError,
 } from './catalogue.js';
+
+export {
+  parseTimelineEvent,
+  readTimeline,
+  TIMELINE_EVENT_TYPES,
+} from './timeline.js';

@@ -56,7 +56,7 @@ import {
 import { getProviders } from './lib/providers.js';
 import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
 import { getCatalogue } from './lib/mcp-catalogue.js';
-import { readPlanArtifact } from './lib/handoffs.js';
+import { readPlanArtifact, readReviewArtifact } from './lib/handoffs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -581,7 +581,7 @@ app.get('/api/projects/:name/runs/:runId/handoffs', (req, res) => {
 
     res.json({
       plan: readPlanArtifact(project.path, req.params.runId),
-      review: null,  // Slice 2
+      review: readReviewArtifact(project.path, req.params.runId),
     });
   } catch (e) {
     res.status(500).json({ error: e?.message ?? String(e) });

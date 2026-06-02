@@ -7,7 +7,7 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { parsePlanArtifact } from '../../../dmux-core/src/handoffs.js';
+import { parsePlanArtifact, parseReviewArtifact } from '../../../dmux-core/src/handoffs.js';
 
 function handoffPath(projectPath, runId, name) {
   return join(projectPath, '.dmux', 'runs', runId, 'handoffs', `${name}.md`);
@@ -30,4 +30,21 @@ export function readPlanArtifact(projectPath, runId) {
     return { markdown: '', structured: null, parseError: `read failed: ${e.message}` };
   }
   return parsePlanArtifact(text);
+}
+
+/**
+ * Read and parse the review artifact for a run. Same shape semantics as
+ * readPlanArtifact — returns the parser result or null when the file
+ * doesn't exist.
+ */
+export function readReviewArtifact(projectPath, runId) {
+  const path = handoffPath(projectPath, runId, 'review');
+  if (!existsSync(path)) return null;
+  let text;
+  try {
+    text = readFileSync(path, 'utf-8');
+  } catch (e) {
+    return { markdown: '', structured: null, parseError: `read failed: ${e.message}` };
+  }
+  return parseReviewArtifact(text);
 }

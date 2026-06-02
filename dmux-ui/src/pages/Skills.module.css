@@ -183,3 +183,60 @@
   background: rgba(255, 255, 255, 0.04);
   border-radius: 4px;
 }
+
+/* Wave 3F: remote catalogue section additions */
+.catalogueHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.catalogueMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.fetchedAt {
+  font-style: italic;
+}
+
+.refreshBtn {
+  background: none;
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.refreshBtn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.refreshBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.catalogueWarning {
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--accent-orange) 10%, var(--bg-input));
+  border-left: 3px solid var(--accent-orange);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+  margin-bottom: var(--space-3);
+}
+
+.cardAuthor {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-style: italic;
+}

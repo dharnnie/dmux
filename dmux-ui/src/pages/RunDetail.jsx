@@ -10,6 +10,7 @@ import { useToast } from '../components/Toasts';
 import ProposalChat from '../components/ProposalChat';
 import RecommendedSkillsCard from '../components/RecommendedSkillsCard';
 import CustomizePanel from '../components/CustomizePanel';
+import HandoffsCard from '../components/HandoffsCard';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -250,6 +251,8 @@ export default function RunDetail() {
           <Link to={`/projects/${name}/agents`}>open the editor view</Link> to see live terminals.
         </p>
       </Card>
+
+      <HandoffsCard projectName={name} runId={runId} />
 
       <Disclosure title={`Run config (frozen at ${formatTimestamp(run.started_at)})`}>
         <pre className={styles.yaml}>{run.config.yaml}</pre>

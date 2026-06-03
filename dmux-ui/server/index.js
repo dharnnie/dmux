@@ -57,6 +57,8 @@ import { getProviders } from './lib/providers.js';
 import { listMcpServers, addMcpServer, removeMcpServer, secretsBackend } from './lib/mcp.js';
 import { getCatalogue } from './lib/mcp-catalogue.js';
 import { readPlanArtifact, readReviewArtifact } from './lib/handoffs.js';
+import { readRunTimeline, getActivitySummary } from './lib/timeline.js';
+import { startHandoffWatcher } from './lib/handoff-watcher.js';
 import {
   getCatalogueForRead,
   fetchCatalogueFresh,
@@ -593,6 +595,31 @@ app.get('/api/projects/:name/runs/:runId/handoffs', (req, res) => {
   }
 });
 
+// Wave 4A Slice 1: run timeline. Returns parsed events + a malformed-line
+// count for the UI's footer warning when a timeline file got corrupted.
+app.get('/api/projects/:name/runs/:runId/timeline', (req, res) => {
+  try {
+    const projects = parseProjectsFile();
+    const project = projects.find((p) => p.name === req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    res.json(readRunTimeline(project.path, req.params.runId));
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
+// Wave 4A Slice 2: god-view aggregate. Returns active agents across all
+// projects with their latest timeline event, or a recently-completed fallback
+// when nothing's in flight.
+app.get('/api/activity', (req, res) => {
+  try {
+    res.json(getActivitySummary(parseProjectsFile()));
+  } catch (e) {
+    res.status(500).json({ error: e?.message ?? String(e) });
+  }
+});
+
 // Full violations payload for one agent — used by the Violations tab on
 // ---------------------------------------------------------------------------
 // Wave 3B chat — project-scoped (Slice 1). Global comes in Slice 2.
@@ -905,4 +932,7 @@ createWsServer(httpServer);
 
 httpServer.listen(PORT, () => {
   console.log(`dmux UI server running at http://localhost:${PORT}`);
+  // Wave 4A Slice 1: poll for newly-written plan.md / review.md handoffs
+  // across active runs and emit timeline events when they appear.
+  startHandoffWatcher();
 });

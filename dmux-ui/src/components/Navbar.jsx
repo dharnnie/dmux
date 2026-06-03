@@ -3,6 +3,7 @@ import styles from './Navbar.module.css';
 
 const LINKS = [
   { to: '/', label: 'Dashboard' },
+  { to: '/activity', label: 'Activity' },
   { to: '/projects', label: 'Projects' },
   { to: '/skills', label: 'Skills' },
   { to: '/chat', label: 'Chat' },

@@ -11,6 +11,7 @@ import ProposalChat from '../components/ProposalChat';
 import RecommendedSkillsCard from '../components/RecommendedSkillsCard';
 import CustomizePanel from '../components/CustomizePanel';
 import HandoffsCard from '../components/HandoffsCard';
+import TimelinePanel from '../components/TimelinePanel';
 import styles from './RunDetail.module.css';
 
 const STATUS_TONE = {
@@ -251,6 +252,8 @@ export default function RunDetail() {
           <Link to={`/projects/${name}/agents`}>open the editor view</Link> to see live terminals.
         </p>
       </Card>
+
+      <TimelinePanel projectName={name} runId={runId} runStatus={run.status} />
 
       <HandoffsCard projectName={name} runId={runId} />
 

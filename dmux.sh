@@ -1613,6 +1613,12 @@ agents_start() {
   local handoffs_dir="$abs_root/.dmux/runs/$run_id/handoffs"
   mkdir -p "$handoffs_dir"
 
+  # Wave 4A Slice 1: emit run_started event. The run-dir is also the
+  # context for every subsequent agent_* and run_completed event in this
+  # run.
+  local _run_dir="$abs_root/.dmux/runs/$run_id"
+  "$0" _log "$_run_dir" "run_started" "" "Run started with ${count} agent$([[ $count -eq 1 ]] || echo s)" "{\"agentCount\":${count}}" 2>/dev/null || true
+
   # Save base branch for changelog generation
   git -C "$project_root" rev-parse --abbrev-ref HEAD > "$abs_root/.dmux/base_branch"
   echo "Base branch: $(cat "$abs_root/.dmux/base_branch")"
@@ -1680,7 +1686,10 @@ agents_start() {
   # Build reusable notification suffix (empty string when notifications disabled)
   local summary_cmd=""
   if [[ "$AGENTS_NOTIFICATIONS" == "true" ]]; then
-    summary_cmd="; '${dmux_bin}' _notify-summary '${signal_dir}' ${all_agent_names}"
+    # Wave 4A: pass the run-dir so _notify-summary can also append a
+    # `run_completed` timeline event when all agents finish.
+    local _run_dir_abs="${abs_root}/.dmux/runs/${run_id}"
+    summary_cmd="; '${dmux_bin}' _notify-summary '${signal_dir}' '${_run_dir_abs}' ${all_agent_names}"
   fi
 
   # Send claude commands to agent panes
@@ -1780,6 +1789,14 @@ ${full_prompt}"
       notify_blocked="; '${dmux_bin}' _notify 'dmux: ${name} blocked' 'Skipped — dependency failed' run_failed"
     fi
 
+    # Wave 4A Slice 1: timeline events paired with the notify hooks above.
+    # These always fire (not gated on AGENTS_NOTIFICATIONS) — the timeline
+    # is a separate persistent surface, the notifications are ephemeral.
+    local log_start="; '${dmux_bin}' _log '${_run_dir}' agent_started '${name}' 'Agent ${name} started' 2>/dev/null"
+    local log_ok="; '${dmux_bin}' _log '${_run_dir}' agent_succeeded '${name}' 'Agent ${name} succeeded' '{\"exitCode\":0}' 2>/dev/null"
+    local log_fail="; '${dmux_bin}' _log '${_run_dir}' agent_failed '${name}' 'Agent ${name} failed (exit '\$_exit')' \"{\\\"exitCode\\\":\$_exit}\" 2>/dev/null"
+    local log_blocked="; '${dmux_bin}' _log '${_run_dir}' agent_blocked '${name}' 'Skipped — dependency failed' 2>/dev/null"
+
     if [[ -n "$deps" ]]; then
       # Dependent agent: wait for marker files, then launch
       local dep_display="${deps//,/, }"
@@ -1798,11 +1815,11 @@ ${full_prompt}"
       for dep in "${dep_arr[@]}"; do
         wait_cmd+="dep_code=\$(cat '${signal_dir}/${dep}.done'); if [ \"\$dep_code\" != '0' ]; then echo 'Dependency ${dep} failed (exit '\$dep_code')'; any_failed=true; fi; "
       done
-      wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'${notify_blocked}${summary_cmd}; else "
+      wait_cmd+="if \$any_failed; then echo 'Skipping agent — dependencies failed.'; echo 99 > '${signal_dir}/${name}.done'${notify_blocked}${log_blocked}${summary_cmd}; else "
       if [[ -n "$full_prompt" ]]; then
-        wait_cmd+="${mcp_env_prefix}${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
+        wait_cmd+="${log_start#; } && ${mcp_env_prefix}${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}${log_ok}; else true${notify_fail}${log_fail}; fi${summary_cmd}"
       else
-        wait_cmd+="${mcp_env_prefix}${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}"
+        wait_cmd+="${log_start#; } && ${mcp_env_prefix}${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}${log_ok}; else true${notify_fail}${log_fail}; fi${summary_cmd}"
       fi
       wait_cmd+="; fi"
       tmux send-keys -t "$AGENTS_SESSION:0.$i" "$wait_cmd" Enter
@@ -1810,9 +1827,9 @@ ${full_prompt}"
       # Independent agent: launch immediately with marker file on exit
       echo "  $name: ${agent_cmd} \"$full_prompt\""
       if [[ -n "$full_prompt" ]]; then
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${mcp_env_prefix}${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${log_start#; } && ${mcp_env_prefix}${agent_cmd} '${escaped_prompt}'; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}${log_ok}; else true${notify_fail}${log_fail}; fi${summary_cmd}" Enter
       else
-        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${mcp_env_prefix}${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}; else true${notify_fail}; fi${summary_cmd}" Enter
+        tmux send-keys -t "$AGENTS_SESSION:0.$i" "${log_start#; } && ${mcp_env_prefix}${agent_cmd}; _exit=\$?; echo \$_exit > '${signal_dir}/${name}.done'; [ \$_exit -eq 0 ] && '${dmux_bin}' _agent-changelog '${name}' '${branch}' '${abs_root}'; if [ \$_exit -eq 0 ]; then true${notify_ok}${log_ok}; else true${notify_fail}${log_fail}; fi${summary_cmd}" Enter
       fi
     fi
   done
@@ -3415,10 +3432,49 @@ for name, server in servers.items():
 PYEOF
     exit $?
     ;;
+  _log)
+    # Wave 4A Slice 1: append a timeline event to <run-dir>/timeline.jsonl.
+    # Usage: dmux _log <run-dir> <type> <agent-or-empty> <summary> [data-json]
+    # Fire-and-forget — never fails (matches the _notify posture).
+    if [[ $# -lt 5 ]]; then exit 0; fi
+    RUN_DIR="$2" EV_TYPE="$3" EV_AGENT="$4" EV_SUMMARY="$5" EV_DATA="${6:-}" python3 <<'PYEOF' 2>/dev/null
+import json, os, sys
+from datetime import datetime, timezone
+try:
+    run_dir = os.environ["RUN_DIR"]
+    if not os.path.isdir(run_dir):
+        sys.exit(0)
+    data_raw = os.environ.get("EV_DATA", "")
+    try:
+        data = json.loads(data_raw) if data_raw else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    agent = os.environ.get("EV_AGENT", "")
+    event = {
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "type": os.environ["EV_TYPE"],
+        "agent": agent if agent else None,
+        "summary": os.environ["EV_SUMMARY"],
+        "data": data,
+    }
+    with open(os.path.join(run_dir, "timeline.jsonl"), "a") as f:
+        f.write(json.dumps(event) + "\n")
+except Exception:
+    # Timeline writes must never fail the calling flow.
+    pass
+PYEOF
+    exit 0
+    ;;
   _notify-summary)
-    # Internal subcommand: if all agents are done, send a summary notification
-    # Usage: _notify-summary <signal_dir> <agent1> <agent2> ...
-    _sig_dir="$2"; shift 2
+    # Internal subcommand: if all agents are done, send a summary notification.
+    # Wave 4A Slice 1: also append a `run_completed` timeline event when the
+    # run actually completes. Usage:
+    #   dmux _notify-summary <signal_dir> <run-dir> <agent1> <agent2> ...
+    _sig_dir="$2"
+    _run_dir="$3"
+    shift 3
     _all_done=true; _ok=0; _fail=0
     for _ag in "$@"; do
       if [[ ! -f "$_sig_dir/$_ag.done" ]]; then
@@ -3430,6 +3486,7 @@ PYEOF
     done
     if $_all_done; then
       send_notification "dmux: Run completed" "$_ok succeeded, $_fail failed" "run_completed"
+      "$0" _log "$_run_dir" "run_completed" "" "$_ok succeeded, $_fail failed" "{\"ok\":$_ok,\"failed\":$_fail}" 2>/dev/null || true
     fi
     exit 0
     ;;

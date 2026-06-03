@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import { ToastProvider } from './components/Toasts';
 import Navbar from './components/Navbar';
 import Dashboard from './pages/Dashboard';
+import Activity from './pages/Activity';
 import ProjectsGrid from './pages/ProjectsGrid';
 import ProjectDetail from './pages/ProjectDetail';
 import AgentSession from './pages/AgentSession';
@@ -19,6 +20,7 @@ export default function App() {
       <main id="main" style={{ flex: 1, padding: '24px 32px' }}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/activity" element={<Activity />} />
           <Route path="/projects" element={<ProjectsGrid />} />
           <Route path="/projects/:name" element={<ProjectDetail />} />
           <Route path="/projects/:name/chat" element={<ProjectChat />} />
